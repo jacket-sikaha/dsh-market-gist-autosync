@@ -442,23 +442,10 @@ async function apply(ctx: any, rawConfig: any) {
       }
     },
   })
-
-  // Optional model tool, only when a tools service + register are available.
-  // Use ctx.get (returns undefined when absent) — reading ctx.tools without a
-  // matching `inject` entry throws "cannot get property ... without inject".
-  const tools = ctx.get('tools')
-  if (tools && typeof tools.register === 'function') {
-    ctx.effect(() =>
-      tools.register({
-        name: 'gist_config_backup',
-        description: '把当前 DSH 配置备份到 GitHub Gist。会先校验 gist token / gist id，缺失或错误时返回失败原因。',
-        parameters: {},
-        async execute() {
-          return doBackup(readBackupConfig(), apiHost)
-        },
-      }),
-    )
-  }
+  // Note: no model tool here. Registering a tool requires the @deepseek-ai/dsh-tools
+  // defineTool contract (output { schema, render }) which is easy to get wrong and
+  // will abort host boot; the core capability is fully covered by the RPC endpoint
+  // above plus self-scheduling. A tool can be added later once the host half is stable.
 }
 
 export { name, inject, Config, apply }
