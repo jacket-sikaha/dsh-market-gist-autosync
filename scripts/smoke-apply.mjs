@@ -22,8 +22,8 @@ if (!capturedRoute) {
 console.log(`route registered: kind=${capturedRoute.kind} path=${capturedRoute.path}`)
 
 // Minimal request/response doubles matching the plugin handler's usage.
-function makeReq(method, action) {
-  const body = action === undefined ? null : JSON.stringify({ action })
+function makeReq(method, action, extra) {
+  const body = action === undefined ? null : JSON.stringify(Object.assign({ action }, extra || {}))
   return {
     method,
     headers: { origin: '' },
@@ -35,14 +35,14 @@ function makeReq(method, action) {
   }
 }
 
-async function call(action) {
+async function call(action, extra) {
   let status = 0
   let out = ''
   const res = {
     writeHead(s, _h) { status = s },
     end(b) { out = (b === undefined ? '' : String(b)) },
   }
-  await capturedRoute.handler(makeReq('POST', action), res)
+  await capturedRoute.handler(makeReq('POST', action, extra), res)
   return { status, body: out ? JSON.parse(out) : null }
 }
 
@@ -58,6 +58,20 @@ console.log('backupNow (no token) ->', JSON.stringify(backup))
 const test = await call('testConnection')
 console.log('testConnection (no token) ->', JSON.stringify(test))
 
+// 4) saveConfig must persist the token to disk (write path)
+const fs = await import('node:fs')
+const os = await import('node:os')
+const path = await import('node:path')
+const cfgPath = path.join(os.homedir(), '.dsh', 'gist-autosync', 'config.json')
+// Save a fake token through the RPC, then read the file back
+const save = await call('saveConfig', { config: {
+  gistToken: 'ghp_SMOKE_TEST_TOKEN', gistId: '', fileNamePrefix: 'config',
+  fileName: '', deviceName: 'SMOKEBOX', scheduleEnabled: false, scheduleIntervalHours: 24,
+} })
+console.log('saveConfig ->', JSON.stringify(save.body))
+const persisted = fs.existsSync(cfgPath) ? JSON.parse(fs.readFileSync(cfgPath, 'utf8')) : null
+console.log('persisted gistToken set:', !!(persisted && persisted.gistToken), '| deviceName:', persisted && persisted.deviceName)
+
 const pass =
   cfg.status === 200 &&
   cfg.body &&
@@ -71,7 +85,13 @@ const pass =
   test.status === 200 &&
   test.body &&
   test.body.ok === false &&
-  test.body.code === 'no_token'
+  test.body.code === 'no_token' &&
+  save.status === 200 &&
+  save.body &&
+  save.body.ok === true &&
+  persisted &&
+  persisted.gistToken === 'ghp_SMOKE_TEST_TOKEN' &&
+  persisted.deviceName === 'SMOKEBOX'
 
 console.log(pass ? '\nPASS — 未配置 token 的失败提示验证通过' : '\nFAIL')
 process.exit(pass ? 0 : 1)
