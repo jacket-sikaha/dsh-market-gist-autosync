@@ -1,0 +1,7 @@
+# dsh bundle patch: mounts this plugin (host half) into the profile layer stack.
+- insert:
+    - id: dsh-market-gist-autosync
+      name: 'dsh-market-gist-autosync'
+      config:
+        scheduleIntervalHours: 24
+        gistApiHost: api.github.com
