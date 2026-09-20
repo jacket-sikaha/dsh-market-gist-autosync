@@ -73,7 +73,7 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
       gistToken: "", gistId: "", fileNamePrefix: "config", fileName: "",
       deviceName: "", scheduleEnabled: false, scheduleIntervalHours: 24, include: []
     };
-    var state = React.useState({ loaded: false, gistToken: "", gistId: "", fileNamePrefix: "config", fileName: "", deviceName: "", scheduleEnabled: false, scheduleIntervalHours: "24", include: [], catalog: [], envTokenSet: false, message: null, busy: false });
+    var state = React.useState({ loaded: false, gistToken: "", gistId: "", fileNamePrefix: "config", fileName: "", deviceName: "", scheduleEnabled: false, scheduleIntervalHours: "24", include: [], catalog: [], envTokenSet: false, restoreGist: "", message: null, busy: false });
 
     function setState(patch) { state[1](function (s) { return Object.assign({}, s, patch); }); }
 
@@ -137,6 +137,17 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
       rpc("backupNow").then(function (r) {
         setState({ busy: false });
         showMessage(r);
+      }).catch(function (e) {
+        setState({ busy: false, message: { ok: false, text: String(e) } });
+      });
+    }
+
+    function restore() {
+      if (!window.confirm("恢复会合并 package.json（不删除现有插件）并覆盖其他配置文件。确定继续吗？")) return;
+      setState({ busy: true });
+      rpc("restore", { gist: state[0].restoreGist }).then(function (r) {
+        setState({ busy: false });
+        showMessage(r.ok ? { ok: true, message: r.message } : r);
       }).catch(function (e) {
         setState({ busy: false, message: { ok: false, text: String(e) } });
       });
@@ -236,6 +247,18 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
         React.createElement(Button, { onClick: save, disabled: s.busy }, "保存配置"),
         React.createElement(Button, { onClick: test, disabled: s.busy, primary: false }, "测试连接"),
         React.createElement(Button, { onClick: backup, disabled: s.busy, primary: false }, "立即备份")
+      ),
+
+      // ---- restore from gist ----
+      React.createElement("div", { style: { margin: "18px 0 4px", fontSize: 13, fontWeight: 600, color: "#1f2328" } }, "从 Gist 恢复"),
+      React.createElement("div", { style: { fontSize: 11, color: "#8b93a1", marginBottom: 8 } }, "合并恢复：package.json 与现有插件合并（不删除已装插件），其他配置文件覆盖。重启后生效。"),
+      React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+        React.createElement("input", {
+          type: "text", value: s.restoreGist, placeholder: "Gist id 或 URL（留空用上方已保存的 Gist ID）",
+          onChange: function (e) { setState({ restoreGist: e.target.value }); },
+          style: { flex: 1, padding: "7px 10px", fontSize: 13, border: "1px solid #e5e7eb", borderRadius: 6, boxSizing: "border-box" }
+        }),
+        React.createElement(Button, { onClick: restore, disabled: s.busy, primary: false }, "恢复")
       ),
 
       msg ? React.createElement("div", { style: msgStyle }, msg.text) : null

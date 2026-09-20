@@ -1,5 +1,5 @@
 import { homedir, hostname } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname, resolve, isAbsolute, sep } from 'node:path'
 import {
   existsSync,
   readFileSync,
@@ -7,6 +7,9 @@ import {
   mkdirSync,
   writeFileSync,
   statSync,
+  lstatSync,
+  renameSync,
+  rmSync,
 } from 'node:fs'
 import { request as httpsRequest } from 'node:https'
 import z from '@deepseek-ai/schemastery'
@@ -277,9 +280,29 @@ const SECRET_HINT = /\.credentials|\.env|secrets?/i
 const WALK_INCLUDE_EXT = new Set(['.json', '.yaml', '.yml', '.toml', '.md'])
 const WALK_MAX_FILE_BYTES = 256 * 1024
 
+/**
+ * Backup file entry, aligned with dshmarket's `dsh-profile-backup` format:
+ * `.json` files carry a parsed `json` object (so a restore can merge
+ * dependencies/bundles instead of overwriting); every other text file carries
+ * `lines` (content split on newlines). This makes our backups readable and
+ * restorable by dshmarket's `validatedBackup` / `restoreProfileBackup`.
+ */
 interface FileEntry {
   path: string
-  content: string
+  json?: unknown
+  lines?: string[]
+}
+
+/** Build one FileEntry in dshmarket shape: json for .json, lines otherwise. */
+function toEntry(rel: string, content: string): FileEntry {
+  if (rel.endsWith('.json')) {
+    try {
+      return { path: rel, json: JSON.parse(content) }
+    } catch {
+      // not valid JSON — fall through to lines
+    }
+  }
+  return { path: rel, lines: content.split(/\r?\n/) }
 }
 
 /** Read one file as a FileEntry, tolerating read failures (skipped). The size
@@ -289,7 +312,7 @@ function readEntry(root: string, rel: string, enforceCap: boolean): FileEntry | 
   try {
     const abs = join(root, rel)
     if (enforceCap && statSync(abs).size > WALK_MAX_FILE_BYTES) return null
-    return { path: rel, content: readFileSync(abs, 'utf8') }
+    return toEntry(rel, readFileSync(abs, 'utf8'))
   } catch {
     return null
   }
@@ -407,6 +430,159 @@ async function doBackup(cfg: GistBackupConfig, host: string): Promise<Result> {
   return { ...ref, fileName: fileNameOf(cfg), at: new Date().toISOString(), containsSecrets }
 }
 
+// ---------------------------------------------------------------------------
+// Restore: read a backup from a Gist and merge it back without clobbering
+// plugins already installed on this machine.
+//
+// Merge semantics (aligned with dshmarket's mergeRestoreManifest): the
+// package.json restore UNIONS bundles and overlays dependencies — current
+// entries stay, backup entries win on name conflicts — so a restore never
+// removes a plugin the target already has. We implement it ourselves (rather
+// than calling dshmarket) because our backups span the whole DSH_HOME, not a
+// single profile.
+// ---------------------------------------------------------------------------
+
+interface ParsedBackup {
+  format: string
+  version: number
+  files: FileEntry[]
+}
+
+/** Fetch + parse a backup from a Gist. Accepts both our format and dshmarket's. */
+async function readGistBackup(token: string, gistId: string, host: string): Promise<{ ok: true; backup: ParsedBackup } | { ok: false; code: string; error: string }> {
+  const r = await gistHttp(token, 'GET', `/gists/${gistId}`, undefined, host)
+  if (r.netError) return err('network', r.netError) as { ok: false; code: string; error: string }
+  if (r.status !== 200) return classify(r.status, r.body) as { ok: false; code: string; error: string }
+  let data: { files?: Record<string, { content?: string }> }
+  try {
+    data = JSON.parse(r.body)
+  } catch {
+    return err('invalid_gist', 'Gist 响应不是有效 JSON') as { ok: false; code: string; error: string }
+  }
+  const file = data.files?.[GIST_FILENAME]
+  const raw = file?.content
+  if (typeof raw !== 'string') return err('invalid_gist', `Gist 中找不到备份文件 ${GIST_FILENAME}`) as { ok: false; code: string; error: string }
+  let parsed: ParsedBackup
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return err('invalid_gist', '备份文件内容不是有效 JSON') as { ok: false; code: string; error: string }
+  }
+  const vErr = validateBackupShape(parsed)
+  if (vErr) return err('invalid_gist', vErr) as { ok: false; code: string; error: string }
+  return { ok: true, backup: parsed }
+}
+
+/** Loose structural validation: accepts our multi-dir backups AND dshmarket's single-profile ones. */
+function validateBackupShape(value: unknown): string | null {
+  if (value === null || typeof value !== 'object') return '备份不是对象'
+  const b = value as { format?: unknown; files?: unknown }
+  if (typeof b.format !== 'string') return '缺少 format 字段'
+  if (!Array.isArray(b.files)) return '缺少 files 数组'
+  for (const f of b.files) {
+    if (f === null || typeof f !== 'object') return 'files 含非对象项'
+    const file = f as { path?: unknown; json?: unknown; lines?: unknown }
+    if (typeof file.path !== 'string' || file.path === '') return 'files 含无 path 项'
+    if (isAbsolute(file.path) || file.path.split(/[\\/]/).includes('..')) return `不安全的备份路径: ${file.path}`
+    const hasJson = file.json !== undefined
+    const hasLines = Array.isArray(file.lines)
+    if (!hasJson && !hasLines) return `文件既无 json 也无 lines: ${file.path}`
+  }
+  return null
+}
+
+/** Serialize a FileEntry back to file content (inverse of toEntry). */
+function entryContent(file: FileEntry): string {
+  if (file.json !== undefined) return JSON.stringify(file.json, null, 2) + '\n'
+  return (file.lines ?? []).join('\n')
+}
+
+/** Merge backup manifest into current: union bundles, overlay deps (current kept, backup wins conflicts). */
+function mergeManifests(backupJson: Record<string, unknown>, current: Record<string, unknown>): Record<string, unknown> {
+  const asObj = (v: unknown): Record<string, unknown> => (v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {})
+  const backupDeps = asObj(backupJson.dependencies)
+  const currentDeps = asObj(current.dependencies)
+  const deps = { ...currentDeps }
+  for (const [k, spec] of Object.entries(backupDeps)) {
+    if (typeof spec === 'string') deps[k] = spec
+  }
+  const backupBundles = asObj(asObj(backupJson.dsh).profile).bundles
+  const currentBundles = asObj(asObj(current.dsh).profile).bundles
+  const bundleSet = new Set<string>()
+  for (const b of Array.isArray(currentBundles) ? currentBundles : []) if (typeof b === 'string') bundleSet.add(b)
+  for (const b of Array.isArray(backupBundles) ? backupBundles : []) if (typeof b === 'string') bundleSet.add(b)
+  const merged: Record<string, unknown> = { ...backupJson, ...current, dependencies: deps }
+  const curDsh = asObj(current.dsh)
+  const curProfile = asObj(curDsh.profile)
+  merged.dsh = { ...asObj(backupJson.dsh), ...curDsh, profile: { ...asObj(asObj(backupJson.dsh).profile), ...curProfile, bundles: [...bundleSet] } }
+  return merged
+}
+
+/**
+ * Restore a backup into $DSH_HOME with merge semantics + atomic writes + rollback.
+ * The current profile's package.json is MERGED (deps overlaid, bundles unioned),
+ * never replaced — so existing plugins survive. All other files are overwritten.
+ */
+function restoreBackup(root: string, backup: ParsedBackup): { ok: true; restored: number; mergedManifest: boolean } | { ok: false; code: string; error: string } {
+  const previous = new Map<string, Buffer | null>()
+  const rollback = () => {
+    for (const [target, content] of previous) {
+      try {
+        if (content === null) rmSync(target, { force: true })
+        else writeFileSync(target, content)
+      } catch { /* best effort */ }
+    }
+  }
+  let mergedManifest = false
+  try {
+    for (const file of backup.files) {
+      const target = resolve(root, file.path)
+      if (!target.startsWith(resolve(root) + sep) && target !== resolve(root, file.path)) {
+        // path escapes root (defensive; validateBackupShape already rejects ..)
+        throw new Error(`不安全的备份路径: ${file.path}`)
+      }
+      // Refuse to overwrite anything that is not a plain file (symlink/dir).
+      if (existsSync(target) && !lstatSync(target).isFile()) throw new Error(`目标不是普通文件: ${file.path}`)
+      mkdirSync(dirname(target), { recursive: true })
+      previous.set(target, existsSync(target) ? readFileSync(target) : null)
+
+      let content: string
+      // Merge the profile manifest instead of overwriting it.
+      if (file.json !== undefined && /(^|\/)package\.json$/.test(file.path) && existsSync(target)) {
+        const current = JSON.parse(readFileSync(target, 'utf8')) as Record<string, unknown>
+        content = JSON.stringify(mergeManifests(file.json as Record<string, unknown>, current), null, 2) + '\n'
+        mergedManifest = true
+      } else {
+        content = entryContent(file)
+      }
+      const temp = `${target}.gist-restore-${process.pid}`
+      writeFileSync(temp, content, 'utf8')
+      renameSync(temp, target)
+    }
+  } catch (e) {
+    rollback()
+    return err('restore_failed', e instanceof Error ? e.message : String(e)) as { ok: false; code: string; error: string }
+  }
+  return { ok: true, restored: backup.files.length, mergedManifest }
+}
+
+async function doRestore(cfg: GistBackupConfig, host: string, gistInput: string): Promise<Result> {
+  const resolved = resolveToken(cfg)
+  if (!resolved) return err('no_token', '未配置 Gist token（请在下方填写，或设置环境变量 DSH_GITHUB_TOKEN）')
+  let gid: string
+  try {
+    gid = parseGistId(gistInput || cfg.gistId)
+  } catch (e) {
+    return err('invalid_gist', e instanceof Error ? e.message : String(e))
+  }
+  if (gid === '') return err('invalid_gist', '请提供要恢复的 Gist id 或 URL')
+  const got = await readGistBackup(resolved.token, gid, host)
+  if (!got.ok) return got
+  const result = restoreBackup(dshHome(), got.backup)
+  if (!result.ok) return result
+  return { ok: true, restored: result.restored, mergedManifest: result.mergedManifest, message: `已恢复 ${result.restored} 个文件${result.mergedManifest ? '（package.json 已合并，未覆盖现有插件）' : ''}。重启 DSH 后生效。` }
+}
+
 function sendJson(response: { writeHead: (s: number, h: Record<string, string>) => void; end: (b?: string) => void }, status: number, value: unknown) {
   response.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
@@ -508,6 +684,9 @@ async function apply(ctx: any, rawConfig: any) {
           sendJson(response, 200, await doTest(readBackupConfig(), apiHost))
         } else if (action === 'backupNow') {
           sendJson(response, 200, await doBackup(readBackupConfig(), apiHost))
+        } else if (action === 'restore') {
+          const gistInput = typeof body.gist === 'string' ? body.gist : ''
+          sendJson(response, 200, await doRestore(readBackupConfig(), apiHost, gistInput))
         } else {
           sendJson(response, 400, { ok: false, code: 'invalid_action', error: 'invalid action' })
         }
@@ -523,3 +702,5 @@ async function apply(ctx: any, rawConfig: any) {
 }
 
 export { name, inject, Config, apply }
+// Exported for tests: merge/restore primitives (verify merge keeps existing plugins).
+export { mergeManifests, restoreBackup, validateBackupShape }
