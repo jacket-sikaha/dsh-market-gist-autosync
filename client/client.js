@@ -131,17 +131,29 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
       setState({ message: r.ok ? { ok: true, text: r.message || r.gistUrl || "成功" } : { ok: false, text: r.error } });
     }
 
+    // Token 有独立的保存按钮；这里只保存定时/备份相关设置（host 端 saveConfig
+    // 是部分合并，未传字段保持磁盘原值）。
     function save() {
       setState({ busy: true });
       rpc("saveConfig", { config: {
-        gistToken: state[0].gistToken, gistId: state[0].gistId,
+        gistId: state[0].gistId,
         deviceName: state[0].deviceName, scheduleEnabled: state[0].scheduleEnabled,
         scheduleIntervalValue: parseInt(state[0].scheduleIntervalValue, 10) || 24,
         scheduleIntervalUnit: state[0].scheduleIntervalUnit,
         includeLock: state[0].includeLock
       } }).then(function (r) {
         setState({ busy: false });
-        showMessage(r.ok ? { ok: true, message: "已保存" } : r);
+        showMessage(r.ok ? { ok: true, message: "定时设置已保存" } : r);
+      }).catch(function (e) {
+        setState({ busy: false, message: { ok: false, text: String(e) } });
+      });
+    }
+
+    function saveToken() {
+      setState({ busy: true });
+      rpc("saveConfig", { config: { gistToken: state[0].gistToken } }).then(function (r) {
+        setState({ busy: false });
+        showMessage(r.ok ? { ok: true, message: "Token 已保存" } : r);
       }).catch(function (e) {
         setState({ busy: false, message: { ok: false, text: String(e) } });
       });
@@ -226,14 +238,34 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
 
       // ===== 备份变量设置 =====
       React.createElement(SectionTitle, null, "备份变量设置"),
-      React.createElement(Field, {
-        label: "Gist Token", type: "password", value: s.gistToken,
-        placeholder: "ghp_...（需要 gist 权限）",
-        onChange: function (v) { setState({ gistToken: v }); },
-        hint: s.envTokenSet
-          ? "检测到环境变量 DSH_GITHUB_TOKEN 已设置 —— 将优先使用它，此处可留空"
-          : "创建：GitHub → Settings → Developer settings → Personal access tokens（勾选 gist 权限）。也可设环境变量 DSH_GITHUB_TOKEN 替代"
-      }),
+      // Token 单独一行：输入框 + 专属「保存 Token」按钮（敏感配置独立保存）
+      React.createElement("div", { style: { marginBottom: 12 } },
+        React.createElement("label", { style: { display: "block", fontSize: 12, color: "#6b7280", marginBottom: 4 } }, "Gist Token"),
+        React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+          React.createElement("input", {
+            type: "password", value: s.gistToken,
+            placeholder: "ghp_...（需要 gist 权限）",
+            onChange: function (e) { setState({ gistToken: e.target.value }); },
+            style: {
+              flex: 1, boxSizing: "border-box", padding: "7px 10px", fontSize: 13,
+              border: "1px solid #e5e7eb", borderRadius: 6, background: "#fff", color: "#1f2328"
+            }
+          }),
+          React.createElement("button", {
+            type: "button", onClick: saveToken, disabled: s.busy,
+            style: {
+              padding: "7px 14px", fontSize: 13, borderRadius: 6, cursor: s.busy ? "default" : "pointer",
+              border: "1px solid #4f6ef7", background: "#fff", color: "#4f6ef7",
+              opacity: s.busy ? 0.5 : 1, whiteSpace: "nowrap"
+            }
+          }, "保存 Token")
+        ),
+        React.createElement("div", { style: { fontSize: 11, color: "#8b93a1", marginTop: 3 } },
+          s.envTokenSet
+            ? "检测到环境变量 DSH_GITHUB_TOKEN 已设置 —— 将优先使用它，此处可留空"
+            : "创建：GitHub → Settings → Developer settings → Personal access tokens（勾选 gist 权限）。也可设环境变量 DSH_GITHUB_TOKEN 替代"
+        )
+      ),
       React.createElement(Field, {
         label: "Gist ID 或 URL", value: s.gistId,
         placeholder: "留空则每次新建；填已有 gist id 或 https://gist.github.com/<user>/<id> 则更新它",
@@ -269,7 +301,7 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
         React.createElement("span", { style: { fontSize: 11, color: "#8b93a1" } }, "执行一次")
       ),
       React.createElement("div", { style: { marginTop: 4 } },
-        React.createElement(Button, { onClick: save, disabled: s.busy }, "保存配置"),
+        React.createElement(Button, { onClick: save, disabled: s.busy }, "保存定时设置"),
         React.createElement(Button, { onClick: test, disabled: s.busy, primary: false }, "测试连接"),
         React.createElement(Button, { onClick: backup, disabled: s.busy, primary: false }, "立即备份")
       ),
