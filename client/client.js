@@ -101,6 +101,8 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
       restoreGist: "", progress: null, message: null, busy: false
     });
     function setState(patch) { state[1](function (s) { return Object.assign({}, s, patch); }); }
+    // Toast 自动消失计时器（跨渲染存活）
+    var msgTimer = React.useRef(null);
 
     React.useEffect(function () {
       rpc("getConfig").then(function (r) {
@@ -128,7 +130,19 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
     }, []);
 
     function showMessage(r) {
-      setState({ message: r.ok ? { ok: true, text: r.message || r.gistUrl || "成功" } : { ok: false, text: r.error } });
+      // 浮动 toast：成功 3.5s、失败 6s 后自动消失，也可手动点 ✕ 关闭
+      if (msgTimer.current) { clearTimeout(msgTimer.current); msgTimer.current = null; }
+      var m = r.ok ? { ok: true, text: r.message || r.gistUrl || "成功" } : { ok: false, text: r.error };
+      setState({ message: m });
+      msgTimer.current = setTimeout(function () {
+        msgTimer.current = null;
+        setState({ message: null });
+      }, m.ok ? 3500 : 6000);
+    }
+
+    function dismissMessage() {
+      if (msgTimer.current) { clearTimeout(msgTimer.current); msgTimer.current = null; }
+      setState({ message: null });
     }
 
     // Token 有独立的保存按钮；这里只保存定时/备份相关设置（host 端 saveConfig
@@ -226,11 +240,21 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
     if (!s.loaded) return React.createElement("div", { style: { padding: 16, fontSize: 13, color: "#8b93a1" } }, "加载中…");
 
     var msg = s.message;
-    var msgStyle = { marginTop: 12, padding: "8px 12px", borderRadius: 6, fontSize: 13 };
-    if (msg && msg.ok) msgStyle = Object.assign({}, msgStyle, { background: "#e8f7ec", color: "#1a7f37" });
-    else if (msg) msgStyle = Object.assign({}, msgStyle, { background: "#fdecea", color: "#c0392b" });
+    // 浮动 toast：固定在视口右上角，不随内容滚动，无需拉到底部查看
+    var toastStyle = {
+      position: "fixed", top: 16, right: 16, zIndex: 9999,
+      maxWidth: 380, padding: "10px 34px 10px 14px", borderRadius: 8, fontSize: 13,
+      lineHeight: 1.5, wordBreak: "break-all",
+      boxShadow: "0 4px 16px rgba(0,0,0,0.14), 0 1px 4px rgba(0,0,0,0.08)",
+      border: "1px solid",
+      animation: "dsh-gist-toast-in 0.18s ease-out"
+    };
+    if (msg && msg.ok) toastStyle = Object.assign({}, toastStyle, { background: "#f0f9f2", color: "#1a7f37", borderColor: "#b7e4c7" });
+    else if (msg) toastStyle = Object.assign({}, toastStyle, { background: "#fdf1f0", color: "#c0392b", borderColor: "#f5c6c2" });
 
     return React.createElement("div", { style: { padding: "4px 4px 16px", maxWidth: 640 } },
+      // toast 滑入动画（仅本组件使用）
+      React.createElement("style", null, "@keyframes dsh-gist-toast-in{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}"),
       React.createElement("h2", { style: { margin: "0 0 4px", fontSize: 16, fontWeight: 500 } }, "Gist 配置备份"),
       React.createElement("p", { style: { margin: "0 0 8px", fontSize: 12, color: "#8b93a1" } },
         "备份当前 profile「" + s.activeProfile + "」的配置到私有 Gist，格式与插件市场（dshmarket）完全兼容、可互相恢复。"
@@ -370,7 +394,17 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
           )
         : React.createElement(Hint, null, "暂无上传记录"),
 
-      msg ? React.createElement("div", { style: msgStyle }, msg.text) : null
+      // 浮动 toast 提示（右上角，自动消失，可手动关闭）
+      msg ? React.createElement("div", { style: toastStyle },
+        msg.text,
+        React.createElement("button", {
+          type: "button", onClick: dismissMessage, title: "关闭",
+          style: {
+            position: "absolute", top: 6, right: 8, border: "none", background: "none",
+            cursor: "pointer", fontSize: 14, lineHeight: 1, color: "inherit", opacity: 0.6, padding: 2
+          }
+        }, "✕")
+      ) : null
     );
   }
 
