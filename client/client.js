@@ -71,9 +71,9 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
   function GistBackupSection() {
     var cfg = {
       gistToken: "", gistId: "", fileNamePrefix: "config", fileName: "",
-      deviceName: "", scheduleEnabled: false, scheduleIntervalHours: 24
+      deviceName: "", scheduleEnabled: false, scheduleIntervalHours: 24, include: []
     };
-    var state = React.useState({ loaded: false, gistToken: "", gistId: "", fileNamePrefix: "config", fileName: "", deviceName: "", scheduleEnabled: false, scheduleIntervalHours: "24", message: null, busy: false });
+    var state = React.useState({ loaded: false, gistToken: "", gistId: "", fileNamePrefix: "config", fileName: "", deviceName: "", scheduleEnabled: false, scheduleIntervalHours: "24", include: [], catalog: [], envTokenSet: false, message: null, busy: false });
 
     function setState(patch) { state[1](function (s) { return Object.assign({}, s, patch); }); }
 
@@ -89,7 +89,10 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
             fileName: c.fileName || "",
             deviceName: c.deviceName || r.deviceNameDetected || "",
             scheduleEnabled: !!c.scheduleEnabled,
-            scheduleIntervalHours: String(c.scheduleIntervalHours || 24)
+            scheduleIntervalHours: String(c.scheduleIntervalHours || 24),
+            include: Array.isArray(c.include) ? c.include : [],
+            catalog: Array.isArray(r.catalog) ? r.catalog : [],
+            envTokenSet: !!r.envTokenSet
           });
         } else {
           setState({ loaded: true, message: { ok: false, text: r.error } });
@@ -109,7 +112,8 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
         gistToken: state[0].gistToken, gistId: state[0].gistId,
         fileNamePrefix: state[0].fileNamePrefix, fileName: state[0].fileName,
         deviceName: state[0].deviceName, scheduleEnabled: state[0].scheduleEnabled,
-        scheduleIntervalHours: parseInt(state[0].scheduleIntervalHours, 10) || 24
+        scheduleIntervalHours: parseInt(state[0].scheduleIntervalHours, 10) || 24,
+        include: state[0].include
       } }).then(function (r) {
         setState({ busy: false });
         showMessage(r.ok ? { ok: true, message: "已保存" } : r);
@@ -138,6 +142,14 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
       });
     }
 
+    function toggleInclude(id, on) {
+      var cur = state[0].include.slice();
+      var i = cur.indexOf(id);
+      if (on && i === -1) cur.push(id);
+      if (!on && i !== -1) cur.splice(i, 1);
+      setState({ include: cur });
+    }
+
     var s = state[0];
     if (!s.loaded) return React.createElement("div", { style: { padding: 16, fontSize: 13, color: "#8b93a1" } }, "加载中…");
 
@@ -154,7 +166,9 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
         label: "Gist Token", type: "password", value: s.gistToken,
         placeholder: "ghp_...（需要 gist 权限）",
         onChange: function (v) { setState({ gistToken: v }); },
-        hint: "创建：GitHub → Settings → Developer settings → Personal access tokens（勾选 gist 权限）"
+        hint: s.envTokenSet
+          ? "检测到环境变量 DSH_GITHUB_TOKEN 已设置 —— 将优先使用它，此处可留空"
+          : "创建：GitHub → Settings → Developer settings → Personal access tokens（勾选 gist 权限）。也可设环境变量 DSH_GITHUB_TOKEN 替代"
       }),
       React.createElement(Field, {
         label: "Gist ID 或 URL", value: s.gistId,
@@ -177,6 +191,37 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
         placeholder: "留空自动探测",
         onChange: function (v) { setState({ deviceName: v }); }
       }),
+
+      // ---- backup content checklist (required greyed / optional checkable) ----
+      React.createElement("div", { style: { margin: "16px 0 4px", fontSize: 13, fontWeight: 600, color: "#1f2328" } }, "备份内容"),
+      React.createElement("div", { style: { fontSize: 11, color: "#8b93a1", marginBottom: 8 } }, "必选为恢复核心配置；可选项勾选后才会打包（避免超过 Gist 1MB 限制）"),
+      React.createElement("div", { style: { border: "1px solid #e5e7eb", borderRadius: 8, overflow: "hidden", marginBottom: 14 } },
+        (s.catalog || []).map(function (u, idx) {
+          var checked = u.required || s.include.indexOf(u.id) !== -1;
+          return React.createElement("label", {
+            key: u.id,
+            style: {
+              display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 12px",
+              cursor: u.required ? "default" : "pointer",
+              background: u.required ? "#f7f8fa" : "#fff",
+              borderTop: idx === 0 ? "none" : "1px solid #f0f1f3"
+            }
+          },
+            React.createElement("input", {
+              type: "checkbox", checked: checked, disabled: u.required,
+              onChange: function (e) { toggleInclude(u.id, e.target.checked); },
+              style: { marginTop: 2 }
+            }),
+            React.createElement("div", null,
+              React.createElement("div", { style: { fontSize: 13, color: u.required ? "#6b7280" : "#1f2328" } },
+                u.label,
+                u.required ? React.createElement("span", { style: { marginLeft: 6, fontSize: 10, color: "#8b93a1", border: "1px solid #e5e7eb", borderRadius: 4, padding: "0 4px" } }, "必选") : null
+              ),
+              React.createElement("div", { style: { fontSize: 11, color: "#8b93a1", marginTop: 2 } }, u.description)
+            )
+          );
+        })
+      ),
 
       React.createElement(Toggle, {
         label: "定时备份", value: s.scheduleEnabled,

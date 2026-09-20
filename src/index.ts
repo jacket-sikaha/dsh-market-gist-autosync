@@ -6,6 +6,7 @@ import {
   readdirSync,
   mkdirSync,
   writeFileSync,
+  statSync,
 } from 'node:fs'
 import { request as httpsRequest } from 'node:https'
 import z from '@deepseek-ai/schemastery'
@@ -47,6 +48,8 @@ interface GistBackupConfig {
   deviceName: string
   scheduleEnabled: boolean
   scheduleIntervalHours: number
+  /** Optional backup units the user opted into (required units are always included). */
+  include: string[]
 }
 
 const DEFAULTS: GistBackupConfig = {
@@ -57,7 +60,32 @@ const DEFAULTS: GistBackupConfig = {
   deviceName: '',
   scheduleEnabled: false,
   scheduleIntervalHours: 24,
+  include: ['root-skin', 'root-skill-hub'],
 }
+
+/**
+ * Backup catalog: the selectable units, grouped required vs optional.
+ * Required units are always collected (they are the minimal set needed to
+ * understand/rebuild this setup); optional units are collected only when the
+ * user checked them. Paths are relative to $DSH_HOME.
+ */
+interface CatalogUnit {
+  id: string
+  label: string
+  description: string
+  required: boolean
+}
+const CATALOG: CatalogUnit[] = [
+  { id: 'profile-core', label: '插件配置（当前 profile）', description: 'package.json 依赖清单 + cordis 补丁层 + workspace 配置 —— 换机重建插件的核心', required: true },
+  { id: 'root-settings', label: '主设置 settings.yaml', description: 'DSH 全局设置（模型、界面、功能开关）', required: true },
+  { id: 'root-credentials', label: '凭证 .credentials.yaml', description: 'API 密钥等凭证（敏感，gist 为私有）', required: true },
+  { id: 'root-skin', label: '主题皮肤 dream-skin.json', description: '梦境皮肤配置（较大，约 300KB）', required: false },
+  { id: 'root-skill-hub', label: '技能中枢配置', description: 'dsh-skill-hub 的分组/来源/统计', required: false },
+  { id: 'root-misc', label: '其他根目录小配置', description: 'thinking-effort、anonymous-id 等', required: false },
+  { id: 'skills-meta', label: '技能文档/配置', description: 'skills/ 下各技能的 .md/.json/.yaml（不含字体等资源）', required: false },
+  { id: 'profile-lock', label: '依赖锁 pnpm-lock.yaml', description: '精确复现依赖版本（约 115KB）', required: false },
+  { id: 'profile-web', label: 'web profile 配置', description: 'profiles/web/ 的配置文件', required: false },
+]
 
 type Result = { ok: true; [k: string]: unknown } | { ok: false; code: string; error: string }
 
@@ -225,79 +253,117 @@ async function verifyToken(token: string, host: string): Promise<Result> {
   return { ok: true, message: '连接正常' }
 }
 
-const SKIP_NAMES = new Set(['node_modules', '.git', 'sessions'])
-const SECRET_HINT = /\.credentials|\.env|secrets?/i
-
-function isConfigFile(n: string): boolean {
-  return (
-    n === 'settings.yaml' ||
-    n === 'dream-skin.json' ||
-    n === 'dsh-skill-hub.json' ||
-    n === 'thinking-effort-loaded.json' ||
-    n === '.anonymous-user-id' ||
-    n.endsWith('.json') ||
-    n.endsWith('.yaml') ||
-    n.endsWith('.yml') ||
-    n.endsWith('.toml')
-  )
+/**
+ * Resolve the Gist token, env first. DSH_GITHUB_TOKEN wins over the saved
+ * config value so a scheduled backup can run without a token ever touching
+ * disk (aligned with dshmarket's posture); the saved form value is the
+ * fallback for interactive use.
+ */
+const GIST_TOKEN_ENV = 'DSH_GITHUB_TOKEN'
+function resolveToken(cfg: GistBackupConfig): { token: string; source: 'env' | 'config' } | null {
+  const env = process.env[GIST_TOKEN_ENV]
+  if (typeof env === 'string' && env.trim() !== '') return { token: env.trim(), source: 'env' }
+  const saved = cfg.gistToken.trim()
+  if (saved !== '') return { token: saved, source: 'config' }
+  return null
 }
+
+const SKIP_NAMES = new Set(['node_modules', '.git', 'sessions', '.dsh-market', '.cache', '__pycache__', 'pnpm-lock.yaml', 'package-lock.json', 'yarn.lock'])
+const SECRET_HINT = /\.credentials|\.env|secrets?/i
+// Backups carry configuration, not skill resources/caches/logs. Only these
+// text extensions are collected from walked subtrees; binary assets (fonts,
+// schemas, pdfs, archives) and logs (.ndjson/.txt) are excluded — otherwise a
+// skills/ tree with fonts alone blows past the 1 MB Gist limit.
+const WALK_INCLUDE_EXT = new Set(['.json', '.yaml', '.yml', '.toml', '.md'])
+const WALK_MAX_FILE_BYTES = 256 * 1024
 
 interface FileEntry {
   path: string
   content: string
 }
 
-function collectFiles(root: string): { files: FileEntry[]; containsSecrets: boolean } {
+/** Read one file as a FileEntry, tolerating read failures (skipped). The size
+ *  cap applies only to walked subtrees (skill resources); explicitly-selected
+ *  root files like the skin are collected at full size. */
+function readEntry(root: string, rel: string, enforceCap: boolean): FileEntry | null {
+  try {
+    const abs = join(root, rel)
+    if (enforceCap && statSync(abs).size > WALK_MAX_FILE_BYTES) return null
+    return { path: rel, content: readFileSync(abs, 'utf8') }
+  } catch {
+    return null
+  }
+}
+
+/** Recursively collect config-like text files under a subtree. */
+function walkConfig(root: string, prefix: string, out: FileEntry[], depth: number): void {
+  if (depth > 4 || out.length > 250) return
+  let kids
+  try {
+    kids = readdirSync(join(root, prefix), { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const k of kids) {
+    if (SKIP_NAMES.has(k.name) || /\.bak\b/.test(k.name)) continue
+    const rel = prefix ? `${prefix}/${k.name}` : k.name
+    if (k.isDirectory()) {
+      walkConfig(root, rel, out, depth + 1)
+    } else if (k.isFile()) {
+      const dot = k.name.lastIndexOf('.')
+      const ext = dot === -1 ? '' : k.name.slice(dot).toLowerCase()
+      if (!WALK_INCLUDE_EXT.has(ext)) continue
+      const e = readEntry(root, rel, true)
+      if (e) out.push(e)
+    }
+  }
+}
+
+/**
+ * Collect backup files according to the catalog selection. Required units are
+ * always included; optional units only when their id is in cfg.include.
+ */
+function collectFiles(root: string, cfg: GistBackupConfig): { files: FileEntry[]; containsSecrets: boolean } {
   const files: FileEntry[] = []
-  let containsSecrets = false
-  const rootEntries = readdirSync(root, { withFileTypes: true })
-
-  for (const e of rootEntries) {
-    if (!e.isFile() || !isConfigFile(e.name)) continue
-    try {
-      const content = readFileSync(join(root, e.name), 'utf8')
-      files.push({ path: e.name, content })
-      if (SECRET_HINT.test(e.name)) containsSecrets = true
-    } catch {
-      // skip unreadable
-    }
+  const include = new Set(cfg.include || [])
+  const want = (id: string) => {
+    const unit = CATALOG.find((u) => u.id === id)
+    return unit !== undefined && (unit.required || include.has(id))
+  }
+  const push = (rel: string) => {
+    const e = readEntry(root, rel, false)
+    if (e) files.push(e)
   }
 
-  const walk = (dir: string, prefix: string, depth: number) => {
-    if (depth > 4) return
-    let kids
-    try {
-      kids = readdirSync(dir, { withFileTypes: true })
-    } catch {
-      return
-    }
-    for (const k of kids) {
-      if (SKIP_NAMES.has(k.name)) continue
-      const rel = prefix ? `${prefix}/${k.name}` : k.name
-      if (k.isDirectory()) walk(join(dir, k.name), rel, depth + 1)
-      else if (k.isFile()) {
-        if (files.length > 250) return
-        try {
-          files.push({ path: rel, content: readFileSync(join(dir, k.name), 'utf8') })
-          if (SECRET_HINT.test(rel)) containsSecrets = true
-        } catch {
-          // skip
-        }
-      }
+  // profile-core: the current profile's minimal rebuild recipe (dshmarket's set)
+  if (want('profile-core')) {
+    for (const f of ['package.json', 'cordis.patch.yml', 'cordis.yml', 'pnpm-workspace.yaml']) {
+      push(`profiles/desktop/${f}`)
     }
   }
-
-  for (const dirname of ['profiles', 'skills', '.agent-presets']) {
-    const d = join(root, dirname)
-    if (existsSync(d)) walk(d, dirname, 0)
+  // root-level single files
+  if (want('root-settings')) push('settings.yaml')
+  if (want('root-credentials')) push('.credentials.yaml')
+  if (want('root-skin')) push('dream-skin.json')
+  if (want('root-skill-hub')) push('dsh-skill-hub.json')
+  if (want('root-misc')) {
+    push('thinking-effort-loaded.json')
+    push('.anonymous-user-id')
   }
+  // optional subtrees
+  if (want('profile-lock')) push('profiles/desktop/pnpm-lock.yaml')
+  if (want('skills-meta')) walkConfig(root, 'skills', files, 0)
+  if (want('profile-web')) walkConfig(root, 'profiles/web', files, 0)
+  if (want('agent-presets')) walkConfig(root, '.agent-presets', files, 0)
 
+  const containsSecrets = files.some((f) => SECRET_HINT.test(f.path))
   return { files, containsSecrets }
 }
 
 async function doTest(cfg: GistBackupConfig, host: string): Promise<Result> {
-  if (!cfg.gistToken.trim()) return err('no_token', '未配置 Gist token')
-  const token = cfg.gistToken.trim()
+  const resolved = resolveToken(cfg)
+  if (!resolved) return err('no_token', '未配置 Gist token（请在下方填写，或设置环境变量 DSH_GITHUB_TOKEN）')
+  const token = resolved.token
   const r = await verifyToken(token, host)
   if (!r.ok) return r
   if (cfg.gistId.trim() !== '') {
@@ -311,19 +377,20 @@ async function doTest(cfg: GistBackupConfig, host: string): Promise<Result> {
     if (get.netError) return err('network', get.netError)
     if (get.status !== 200) return classify(get.status, get.body)
   }
-  return { ok: true, message: '连接正常' }
+  return { ok: true, message: `连接正常（token 来源：${resolved.source === 'env' ? '环境变量' : '已保存配置'}）` }
 }
 
 async function doBackup(cfg: GistBackupConfig, host: string): Promise<Result> {
-  if (!cfg.gistToken.trim()) return err('no_token', '未配置 Gist token')
+  const resolved = resolveToken(cfg)
+  if (!resolved) return err('no_token', '未配置 Gist token（请在下方填写，或设置环境变量 DSH_GITHUB_TOKEN）')
   let gid: string
   try {
     gid = parseGistId(cfg.gistId)
   } catch (e) {
     return err('invalid_gist', e instanceof Error ? e.message : String(e))
   }
-  const token = cfg.gistToken.trim()
-  const { files, containsSecrets } = collectFiles(dshHome())
+  const token = resolved.token
+  const { files, containsSecrets } = collectFiles(dshHome(), cfg)
   const envelope = {
     format: 'dsh-config-gist-backup',
     version: 1,
@@ -427,11 +494,13 @@ async function apply(ctx: any, rawConfig: any) {
         const body = await readJsonBody(request)
         const action = body.action
         if (action === 'getConfig') {
-          sendJson(response, 200, { ok: true, config: readBackupConfig(), deviceNameDetected: deviceName() })
+          const envToken = typeof process.env[GIST_TOKEN_ENV] === 'string' && process.env[GIST_TOKEN_ENV].trim() !== ''
+          sendJson(response, 200, { ok: true, config: readBackupConfig(), deviceNameDetected: deviceName(), catalog: CATALOG, envTokenSet: envToken })
         } else if (action === 'saveConfig') {
           const cfg = { ...DEFAULTS, ...(body.config as Partial<GistBackupConfig> || {}) }
           cfg.scheduleEnabled = Boolean(cfg.scheduleEnabled)
           cfg.scheduleIntervalHours = Math.max(1, Number(cfg.scheduleIntervalHours) || 24)
+          cfg.include = Array.isArray(cfg.include) ? cfg.include.filter((x) => typeof x === 'string') : []
           writeBackupConfig(cfg)
           schedule(cfg)
           sendJson(response, 200, { ok: true, config: cfg })
