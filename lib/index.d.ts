@@ -1,4 +1,21 @@
+/**
+ * dsh-market-gist-autosync — 把当前 DSH profile 的配置定时备份到 GitHub Gist。
+ *
+ * Host 半（Cordis 插件入口）。业务逻辑按职责拆分到同目录模块：
+ *   config.ts      配置、路径、常量、token 解析、调度间隔
+ *   gist.ts        GitHub Gist HTTP 与 create/update/read
+ *   backup.ts      profile 文件收集、备份 envelope、严格校验（对齐 dshmarket）
+ *   restore.ts     合并 manifest、原子写回、文件回滚
+ *   install.ts     恢复后 pnpm install（含逐插件进度回调）
+ *   operations.ts  test/backup/restore 高层编排
+ *   rpc.ts         HTTP 工具（sendJson/sameOrigin/readJsonBody）
+ *
+ * 本文件只做 Cordis 接线：inject、Config schema、apply（定时调度 + RPC 路由）。
+ */
 import z from '@deepseek-ai/schemastery';
+export { mergeManifests, restoreBackup } from './restore.js';
+export { validateBackupStrict, collectProfileBackup, serializeBackup } from './backup.js';
+export { installRestoredDeps } from './install.js';
 declare const name = "dsh-market-gist-autosync";
 declare const inject: string[];
 declare const Config: z<Schemastery.ObjectS<{
@@ -6,35 +23,5 @@ declare const Config: z<Schemastery.ObjectS<{
 }>, Schemastery.ObjectT<{
     gistApiHost: z<string, string>;
 }>>;
-interface FileEntry {
-    path: string;
-    json?: unknown;
-    lines?: string[];
-}
-declare function collectProfileBackup(includeLock: boolean): {
-    files: FileEntry[];
-    containsSecrets: boolean;
-};
-/** Serialize the backup with 2-space indent so it reads well on the Gist web UI. */
-declare function serializeBackup(backup: unknown): string;
-interface ParsedBackup {
-    format: string;
-    version: number;
-    files: FileEntry[];
-}
-/** Loose structural validation accepting both our and dshmarket's backups. */
-declare function validateBackupShape(value: unknown): string | null;
-/** Merge backup manifest into current: union bundles, overlay deps (current kept, backup wins conflicts). */
-declare function mergeManifests(backupJson: Record<string, unknown>, current: Record<string, unknown>): Record<string, unknown>;
-declare function restoreBackup(root: string, backup: ParsedBackup): {
-    ok: true;
-    restored: number;
-    mergedManifest: boolean;
-} | {
-    ok: false;
-    code: string;
-    error: string;
-};
 declare function apply(ctx: any, rawConfig: any): Promise<void>;
 export { name, inject, Config, apply };
-export { mergeManifests, restoreBackup, validateBackupShape, collectProfileBackup, serializeBackup };

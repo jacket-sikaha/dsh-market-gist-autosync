@@ -98,7 +98,7 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
       gistToken: "", gistId: "", deviceName: "",
       scheduleEnabled: false, scheduleIntervalValue: "24", scheduleIntervalUnit: "hour",
       includeLock: false, uploads: [], envTokenSet: false, activeProfile: "desktop",
-      restoreGist: "", message: null, busy: false
+      restoreGist: "", progress: null, message: null, busy: false
     });
     function setState(patch) { state[1](function (s) { return Object.assign({}, s, patch); }); }
 
@@ -177,12 +177,22 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
 
     function restore(gistValue) {
       if (!window.confirm("恢复会合并 package.json（不删除现有插件）并覆盖其他配置文件。确定继续吗？")) return;
-      setState({ busy: true });
+      setState({ busy: true, progress: ["正在下载备份…"] });
+      // Poll restore progress so the user sees which plugins are installing.
+      var pollTimer = setInterval(function () {
+        rpc("restoreProgress").then(function (p) {
+          if (p && p.ok && Array.isArray(p.lines) && p.lines.length > 0) {
+            setState({ progress: p.lines.slice() });
+          }
+        }).catch(function () { /* ignore poll errors */ });
+      }, 400);
       rpc("restore", { gist: gistValue }).then(function (r) {
-        setState({ busy: false });
+        clearInterval(pollTimer);
+        setState({ busy: false, progress: (r && r.progressLines) || null });
         showMessage(r.ok ? { ok: true, message: r.message } : r);
       }).catch(function (e) {
-        setState({ busy: false, message: { ok: false, text: String(e) } });
+        clearInterval(pollTimer);
+        setState({ busy: false, progress: null, message: { ok: false, text: String(e) } });
       });
     }
 
@@ -261,6 +271,14 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
         }),
         React.createElement(Button, { onClick: function () { restore(s.restoreGist); }, disabled: s.busy, primary: false }, "恢复")
       ),
+      // 恢复进度（实时显示正在安装哪些插件）
+      (s.progress && s.progress.length > 0)
+        ? React.createElement("div", { style: { margin: "8px 0", padding: "8px 12px", background: "#f6f8fa", border: "1px solid #e5e7eb", borderRadius: 6, fontSize: 12, fontFamily: "monospace", color: "#4b5563", maxHeight: 140, overflowY: "auto" } },
+            s.progress.map(function (line, i) {
+              return React.createElement("div", { key: i, style: { padding: "1px 0" } }, line);
+            })
+          )
+        : null,
 
       // ===== 上传记录 =====
       React.createElement(SectionTitle, null, "上传记录"),
