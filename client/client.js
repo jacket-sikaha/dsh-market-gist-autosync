@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
 
   var React = require("react");
 
-  // -- minimal same-origin fetch helper (mirrors dshmarket's `api()`) ---------
+  // -- minimal same-origin fetch helper --------------------------------------
   function api(path) {
     var relative = path.replace(/^\/+/, "");
     if (typeof document === "undefined") return "/" + relative;
@@ -24,7 +24,18 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
     });
   }
 
-  // -- tiny controlled-field helpers (no primitives dependency) --------------
+  // -- tiny UI primitives (no external deps) ---------------------------------
+  function SectionTitle(props) {
+    return React.createElement("div", { style: { margin: "18px 0 6px", fontSize: 13, fontWeight: 600, color: "#1f2328", display: "flex", alignItems: "center", gap: 6 } },
+      React.createElement("span", { style: { display: "inline-block", width: 3, height: 14, background: "#4f6ef7", borderRadius: 2 } }),
+      props.children
+    );
+  }
+
+  function Hint(props) {
+    return React.createElement("div", { style: { fontSize: 11, color: "#8b93a1", marginBottom: 8 } }, props.children);
+  }
+
   function Field(props) {
     return React.createElement("div", { style: { marginBottom: 12 } },
       React.createElement("label", { style: { display: "block", fontSize: 12, color: "#6b7280", marginBottom: 4 } }, props.label),
@@ -67,32 +78,46 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
     }, props.children);
   }
 
+  function fmtBytes(n) {
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / 1024 / 1024).toFixed(2) + " MB";
+  }
+  function fmtTime(iso) {
+    if (!iso) return "-";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    function p(x) { return String(x).padStart(2, "0"); }
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+
   // -- the settings section component ----------------------------------------
   function GistBackupSection() {
-    var cfg = {
-      gistToken: "", gistId: "", fileNamePrefix: "config", fileName: "",
-      deviceName: "", scheduleEnabled: false, scheduleIntervalHours: 24, include: []
-    };
-    var state = React.useState({ loaded: false, gistToken: "", gistId: "", fileNamePrefix: "config", fileName: "", deviceName: "", scheduleEnabled: false, scheduleIntervalHours: "24", include: [], catalog: [], envTokenSet: false, restoreGist: "", message: null, busy: false });
-
+    var state = React.useState({
+      loaded: false,
+      gistToken: "", gistId: "", deviceName: "",
+      scheduleEnabled: false, scheduleIntervalValue: "24", scheduleIntervalUnit: "hour",
+      includeLock: false, uploads: [], envTokenSet: false, activeProfile: "desktop",
+      restoreGist: "", message: null, busy: false
+    });
     function setState(patch) { state[1](function (s) { return Object.assign({}, s, patch); }); }
 
     React.useEffect(function () {
       rpc("getConfig").then(function (r) {
         if (r.ok) {
-          var c = r.config || cfg;
+          var c = r.config || {};
           setState({
             loaded: true,
             gistToken: c.gistToken || "",
             gistId: c.gistId || "",
-            fileNamePrefix: c.fileNamePrefix || "config",
-            fileName: c.fileName || "",
             deviceName: c.deviceName || r.deviceNameDetected || "",
             scheduleEnabled: !!c.scheduleEnabled,
-            scheduleIntervalHours: String(c.scheduleIntervalHours || 24),
-            include: Array.isArray(c.include) ? c.include : [],
-            catalog: Array.isArray(r.catalog) ? r.catalog : [],
-            envTokenSet: !!r.envTokenSet
+            scheduleIntervalValue: String(c.scheduleIntervalValue || 24),
+            scheduleIntervalUnit: c.scheduleIntervalUnit === "minute" ? "minute" : "hour",
+            includeLock: !!c.includeLock,
+            uploads: Array.isArray(c.uploads) ? c.uploads : [],
+            envTokenSet: !!r.envTokenSet,
+            activeProfile: r.activeProfile || "desktop"
           });
         } else {
           setState({ loaded: true, message: { ok: false, text: r.error } });
@@ -110,10 +135,10 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
       setState({ busy: true });
       rpc("saveConfig", { config: {
         gistToken: state[0].gistToken, gistId: state[0].gistId,
-        fileNamePrefix: state[0].fileNamePrefix, fileName: state[0].fileName,
         deviceName: state[0].deviceName, scheduleEnabled: state[0].scheduleEnabled,
-        scheduleIntervalHours: parseInt(state[0].scheduleIntervalHours, 10) || 24,
-        include: state[0].include
+        scheduleIntervalValue: parseInt(state[0].scheduleIntervalValue, 10) || 24,
+        scheduleIntervalUnit: state[0].scheduleIntervalUnit,
+        includeLock: state[0].includeLock
       } }).then(function (r) {
         setState({ busy: false });
         showMessage(r.ok ? { ok: true, message: "已保存" } : r);
@@ -135,30 +160,30 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
     function backup() {
       setState({ busy: true });
       rpc("backupNow").then(function (r) {
-        setState({ busy: false });
-        showMessage(r);
+        if (r.ok) {
+          // refresh uploads + gistId after a successful backup
+          var uploads = state[0].uploads.slice();
+          uploads.unshift({ gistId: r.gistId, gistUrl: r.gistUrl, bytes: r.bytes, createdAt: r.createdAt, updatedAt: r.updatedAt });
+          setState({ busy: false, gistId: r.gistId, uploads: uploads.slice(0, 20) });
+          showMessage({ ok: true, message: "备份成功 " + fmtBytes(r.bytes) });
+        } else {
+          setState({ busy: false });
+          showMessage(r);
+        }
       }).catch(function (e) {
         setState({ busy: false, message: { ok: false, text: String(e) } });
       });
     }
 
-    function restore() {
+    function restore(gistValue) {
       if (!window.confirm("恢复会合并 package.json（不删除现有插件）并覆盖其他配置文件。确定继续吗？")) return;
       setState({ busy: true });
-      rpc("restore", { gist: state[0].restoreGist }).then(function (r) {
+      rpc("restore", { gist: gistValue }).then(function (r) {
         setState({ busy: false });
         showMessage(r.ok ? { ok: true, message: r.message } : r);
       }).catch(function (e) {
         setState({ busy: false, message: { ok: false, text: String(e) } });
       });
-    }
-
-    function toggleInclude(id, on) {
-      var cur = state[0].include.slice();
-      var i = cur.indexOf(id);
-      if (on && i === -1) cur.push(id);
-      if (!on && i !== -1) cur.splice(i, 1);
-      setState({ include: cur });
     }
 
     var s = state[0];
@@ -169,10 +194,14 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
     if (msg && msg.ok) msgStyle = Object.assign({}, msgStyle, { background: "#e8f7ec", color: "#1a7f37" });
     else if (msg) msgStyle = Object.assign({}, msgStyle, { background: "#fdecea", color: "#c0392b" });
 
-    return React.createElement("div", { style: { padding: "4px 4px 16px" } },
+    return React.createElement("div", { style: { padding: "4px 4px 16px", maxWidth: 640 } },
       React.createElement("h2", { style: { margin: "0 0 4px", fontSize: 16, fontWeight: 500 } }, "Gist 配置备份"),
-      React.createElement("p", { style: { margin: "0 0 16px", fontSize: 12, color: "#8b93a1" } }, "把 DSH 配置定时备份到 GitHub Gist（私有）。token 以明文保存在本地 config.json。"),
+      React.createElement("p", { style: { margin: "0 0 8px", fontSize: 12, color: "#8b93a1" } },
+        "备份当前 profile「" + s.activeProfile + "」的配置到私有 Gist，格式与插件市场（dshmarket）完全兼容、可互相恢复。"
+      ),
 
+      // ===== 备份变量设置 =====
+      React.createElement(SectionTitle, null, "备份变量设置"),
       React.createElement(Field, {
         label: "Gist Token", type: "password", value: s.gistToken,
         placeholder: "ghp_...（需要 gist 权限）",
@@ -183,83 +212,76 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
       }),
       React.createElement(Field, {
         label: "Gist ID 或 URL", value: s.gistId,
-        placeholder: "留空则每次新建；填已有 gist id 或 https://gist.github.com/<id>",
-        onChange: function (v) { setState({ gistId: v }); }
+        placeholder: "留空则每次新建；填已有 gist id 或 https://gist.github.com/<user>/<id> 则更新它",
+        onChange: function (v) { setState({ gistId: v }); },
+        hint: "新建成功后会自动把 gist id 存回这里"
       }),
-      React.createElement(Field, {
-        label: "文件名前缀", value: s.fileNamePrefix,
-        placeholder: "config",
-        onChange: function (v) { setState({ fileNamePrefix: v }); },
-        hint: "自动命名 = 前缀 + 时间戳 + 设备名，例如 config-20260918-163000-DESKTOP.json"
-      }),
-      React.createElement(Field, {
-        label: "自定义文件名（可选）", value: s.fileName,
-        placeholder: "留空用自动命名",
-        onChange: function (v) { setState({ fileName: v }); }
-      }),
-      React.createElement(Field, {
-        label: "设备名", value: s.deviceName,
-        placeholder: "留空自动探测",
-        onChange: function (v) { setState({ deviceName: v }); }
+      React.createElement(Toggle, {
+        label: "同时备份 pnpm-lock.yaml（精确复现依赖版本，约 115KB）", value: s.includeLock,
+        onChange: function (v) { setState({ includeLock: v }); }
       }),
 
-      // ---- backup content checklist (required greyed / optional checkable) ----
-      React.createElement("div", { style: { margin: "16px 0 4px", fontSize: 13, fontWeight: 600, color: "#1f2328" } }, "备份内容"),
-      React.createElement("div", { style: { fontSize: 11, color: "#8b93a1", marginBottom: 8 } }, "必选为恢复核心配置；可选项勾选后才会打包（避免超过 Gist 1MB 限制）"),
-      React.createElement("div", { style: { border: "1px solid #e5e7eb", borderRadius: 8, overflow: "hidden", marginBottom: 14 } },
-        (s.catalog || []).map(function (u, idx) {
-          var checked = u.required || s.include.indexOf(u.id) !== -1;
-          return React.createElement("label", {
-            key: u.id,
-            style: {
-              display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 12px",
-              cursor: u.required ? "default" : "pointer",
-              background: u.required ? "#f7f8fa" : "#fff",
-              borderTop: idx === 0 ? "none" : "1px solid #f0f1f3"
-            }
-          },
-            React.createElement("input", {
-              type: "checkbox", checked: checked, disabled: u.required,
-              onChange: function (e) { toggleInclude(u.id, e.target.checked); },
-              style: { marginTop: 2 }
-            }),
-            React.createElement("div", null,
-              React.createElement("div", { style: { fontSize: 13, color: u.required ? "#6b7280" : "#1f2328" } },
-                u.label,
-                u.required ? React.createElement("span", { style: { marginLeft: 6, fontSize: 10, color: "#8b93a1", border: "1px solid #e5e7eb", borderRadius: 4, padding: "0 4px" } }, "必选") : null
-              ),
-              React.createElement("div", { style: { fontSize: 11, color: "#8b93a1", marginTop: 2 } }, u.description)
-            )
-          );
-        })
-      ),
-
+      // ===== 执行 =====
+      React.createElement(SectionTitle, null, "执行"),
       React.createElement(Toggle, {
         label: "定时备份", value: s.scheduleEnabled,
         onChange: function (v) { setState({ scheduleEnabled: v }); }
       }),
-      React.createElement(Field, {
-        label: "周期间隔（小时）", value: s.scheduleIntervalHours,
-        onChange: function (v) { setState({ scheduleIntervalHours: v }); }
-      }),
-
-      React.createElement("div", { style: { marginTop: 8 } },
+      React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 12 } },
+        React.createElement("span", { style: { fontSize: 12, color: "#6b7280" } }, "每隔"),
+        React.createElement("input", {
+          type: "number", min: "1", value: s.scheduleIntervalValue,
+          onChange: function (e) { setState({ scheduleIntervalValue: e.target.value }); },
+          style: { width: 80, padding: "7px 10px", fontSize: 13, border: "1px solid #e5e7eb", borderRadius: 6, boxSizing: "border-box" }
+        }),
+        React.createElement("select", {
+          value: s.scheduleIntervalUnit,
+          onChange: function (e) { setState({ scheduleIntervalUnit: e.target.value }); },
+          style: { padding: "7px 10px", fontSize: 13, border: "1px solid #e5e7eb", borderRadius: 6, background: "#fff" }
+        },
+          React.createElement("option", { value: "minute" }, "分钟"),
+          React.createElement("option", { value: "hour" }, "小时")
+        ),
+        React.createElement("span", { style: { fontSize: 11, color: "#8b93a1" } }, "执行一次")
+      ),
+      React.createElement("div", { style: { marginTop: 4 } },
         React.createElement(Button, { onClick: save, disabled: s.busy }, "保存配置"),
         React.createElement(Button, { onClick: test, disabled: s.busy, primary: false }, "测试连接"),
         React.createElement(Button, { onClick: backup, disabled: s.busy, primary: false }, "立即备份")
       ),
 
-      // ---- restore from gist ----
-      React.createElement("div", { style: { margin: "18px 0 4px", fontSize: 13, fontWeight: 600, color: "#1f2328" } }, "从 Gist 恢复"),
-      React.createElement("div", { style: { fontSize: 11, color: "#8b93a1", marginBottom: 8 } }, "合并恢复：package.json 与现有插件合并（不删除已装插件），其他配置文件覆盖。重启后生效。"),
+      // ===== 恢复 =====
+      React.createElement(SectionTitle, null, "恢复"),
+      React.createElement(Hint, null, "兼容插件市场（dshmarket）的备份。合并恢复：package.json 与现有插件合并（不删除已装插件），其他配置文件覆盖。重启后生效。"),
       React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
         React.createElement("input", {
           type: "text", value: s.restoreGist, placeholder: "Gist id 或 URL（留空用上方已保存的 Gist ID）",
           onChange: function (e) { setState({ restoreGist: e.target.value }); },
           style: { flex: 1, padding: "7px 10px", fontSize: 13, border: "1px solid #e5e7eb", borderRadius: 6, boxSizing: "border-box" }
         }),
-        React.createElement(Button, { onClick: restore, disabled: s.busy, primary: false }, "恢复")
+        React.createElement(Button, { onClick: function () { restore(s.restoreGist); }, disabled: s.busy, primary: false }, "恢复")
       ),
+
+      // ===== 上传记录 =====
+      React.createElement(SectionTitle, null, "上传记录"),
+      (s.uploads && s.uploads.length > 0)
+        ? React.createElement("div", { style: { border: "1px solid #e5e7eb", borderRadius: 8, overflow: "hidden" } },
+            s.uploads.map(function (u, idx) {
+              return React.createElement("div", {
+                key: u.gistId + idx,
+                style: { padding: "8px 12px", borderTop: idx === 0 ? "none" : "1px solid #f0f1f3", fontSize: 12 }
+              },
+                React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 } },
+                  React.createElement("a", { href: u.gistUrl, target: "_blank", rel: "noreferrer", style: { color: "#4f6ef7", textDecoration: "none", fontFamily: "monospace", fontSize: 12 } }, u.gistId),
+                  React.createElement("span", { style: { color: "#8b93a1", whiteSpace: "nowrap" } }, fmtBytes(u.bytes))
+                ),
+                React.createElement("div", { style: { color: "#8b93a1", marginTop: 3, fontSize: 11 } },
+                  "创建 " + fmtTime(u.createdAt) + " · 更新 " + fmtTime(u.updatedAt)
+                )
+              );
+            })
+          )
+        : React.createElement(Hint, null, "暂无上传记录"),
 
       msg ? React.createElement("div", { style: msgStyle }, msg.text) : null
     );

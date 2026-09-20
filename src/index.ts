@@ -1,3 +1,15 @@
+/**
+ * dsh-market-gist-autosync — 把当前 DSH profile 的配置定时备份到 GitHub Gist。
+ *
+ * Host 半（Cordis 插件）：
+ * - 备份格式完全对齐 dshmarket 的 `dsh-profile-backup` v0.2 —— 导出的 gist 可被
+ *   dshmarket 的恢复功能直接读取，恢复路径也兼容 dshmarket 产出的备份。
+ * - 上传内容用 2 空格缩进美化，GitHub 网页上可读。
+ * - 新建 gist 成功后把 gistId 写回本地配置，省去手动查找。
+ * - 自持定时（分钟粒度），通过 ctx.effect 注册、随 fiber 回收。
+ * - 通过 ctx.webServer.register 暴露 RPC：getConfig / saveConfig / testConnection
+ *   / backupNow / restore / listUploads。Client 设置页走这条 RPC。
+ */
 import { homedir, hostname } from 'node:os'
 import { join, dirname, resolve, isAbsolute, sep } from 'node:path'
 import {
@@ -14,81 +26,65 @@ import {
 import { request as httpsRequest } from 'node:https'
 import z from '@deepseek-ai/schemastery'
 
-/**
- * dsh-market-gist-autosync — 把 DSH 配置定时备份到 GitHub Gist。
- *
- * Host half only for the first minimal version: gist token / gist id 配置、
- * 配置备份（带错误分类）、自持定时备份，全部在一个插件里完成。
- * Client 设置页在后续版本补上；当前通过 RPC + 一个模型工具暴露能力。
- */
-
 const name = 'dsh-market-gist-autosync'
 
 const inject = ['webServer']
 
 const Config = z.object({
-  scheduleIntervalHours: z.number().step(1).min(1).max(24 * 30).default(24),
   gistApiHost: z.string().default('api.github.com'),
 })
 
 const CONFIG_DIR = 'gist-autosync'
 const CONFIG_FILE = 'config.json'
-const GIST_FILENAME = 'dsh-config-backup.json'
+const GIST_FILENAME = 'dsh-profile-backup.json'
 const GIST_MAX_BYTES = 1024 * 1024
 const REQUEST_TIMEOUT_MS = 30_000
 const GIST_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
+const GIST_TOKEN_ENV = 'DSH_GITHUB_TOKEN'
 
-const NETWORK_ERROR_CODES = new Set([
-  'ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT',
-  'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH', 'ECONNABORTED',
-])
+/** dshmarket backup format constants — kept identical so backups interoperate. */
+const BACKUP_FORMAT = 'dsh-profile-backup'
+const BACKUP_VERSION = 0.2
+const MAX_BACKUP_FILES = 256
+const PROFILE_SKIP = new Set(['node_modules', '.dsh-market', '.git'])
+const MAX_UPLOAD_RECORDS = 20
+
+/** The active profile this backup covers (matches the desktop profile dir). */
+function activeProfile(): string {
+  return process.env.DSH_PROFILE || 'desktop'
+}
+
+interface UploadRecord {
+  gistId: string
+  gistUrl: string
+  bytes: number
+  createdAt: string
+  updatedAt: string
+}
 
 interface GistBackupConfig {
   gistToken: string
   gistId: string
-  fileNamePrefix: string
-  fileName: string
   deviceName: string
   scheduleEnabled: boolean
-  scheduleIntervalHours: number
-  /** Optional backup units the user opted into (required units are always included). */
-  include: string[]
+  /** Schedule interval magnitude + unit (minute-granularity). */
+  scheduleIntervalValue: number
+  scheduleIntervalUnit: 'minute' | 'hour'
+  /** Optional extras to fold into the backup beyond the dshmarket core set. */
+  includeLock: boolean
+  uploads: UploadRecord[]
 }
 
 const DEFAULTS: GistBackupConfig = {
   gistToken: '',
   gistId: '',
-  fileNamePrefix: 'config',
-  fileName: '',
   deviceName: '',
   scheduleEnabled: false,
-  scheduleIntervalHours: 24,
-  include: ['root-skin', 'root-skill-hub'],
+  scheduleIntervalValue: 24,
+  scheduleIntervalUnit: 'hour',
+  includeLock: false,
+  uploads: [],
 }
-
-/**
- * Backup catalog: the selectable units, grouped required vs optional.
- * Required units are always collected (they are the minimal set needed to
- * understand/rebuild this setup); optional units are collected only when the
- * user checked them. Paths are relative to $DSH_HOME.
- */
-interface CatalogUnit {
-  id: string
-  label: string
-  description: string
-  required: boolean
-}
-const CATALOG: CatalogUnit[] = [
-  { id: 'profile-core', label: '插件配置（当前 profile）', description: 'package.json 依赖清单 + cordis 补丁层 + workspace 配置 —— 换机重建插件的核心', required: true },
-  { id: 'root-settings', label: '主设置 settings.yaml', description: 'DSH 全局设置（模型、界面、功能开关）', required: true },
-  { id: 'root-credentials', label: '凭证 .credentials.yaml', description: 'API 密钥等凭证（敏感，gist 为私有）', required: true },
-  { id: 'root-skin', label: '主题皮肤 dream-skin.json', description: '梦境皮肤配置（较大，约 300KB）', required: false },
-  { id: 'root-skill-hub', label: '技能中枢配置', description: 'dsh-skill-hub 的分组/来源/统计', required: false },
-  { id: 'root-misc', label: '其他根目录小配置', description: 'thinking-effort、anonymous-id 等', required: false },
-  { id: 'skills-meta', label: '技能文档/配置', description: 'skills/ 下各技能的 .md/.json/.yaml（不含字体等资源）', required: false },
-  { id: 'profile-lock', label: '依赖锁 pnpm-lock.yaml', description: '精确复现依赖版本（约 115KB）', required: false },
-  { id: 'profile-web', label: 'web profile 配置', description: 'profiles/web/ 的配置文件', required: false },
-]
 
 type Result = { ok: true; [k: string]: unknown } | { ok: false; code: string; error: string }
 
@@ -98,6 +94,10 @@ function err(code: string, error: string): Result {
 
 function dshHome(): string {
   return process.env.DSH_HOME || homedir()
+}
+
+function profileRoot(): string {
+  return join(dshHome(), 'profiles', activeProfile())
 }
 
 function configDirPath(): string {
@@ -113,7 +113,9 @@ function readBackupConfig(): GistBackupConfig {
     const text = readFileSync(configFilePath(), 'utf8')
     const parsed = JSON.parse(text)
     if (parsed && typeof parsed === 'object') {
-      return { ...DEFAULTS, ...parsed }
+      const cfg = { ...DEFAULTS, ...parsed } as GistBackupConfig
+      if (!Array.isArray(cfg.uploads)) cfg.uploads = []
+      return cfg
     }
   } catch {
     // no config yet — defaults
@@ -126,29 +128,8 @@ function writeBackupConfig(cfg: GistBackupConfig): void {
   writeFileSync(configFilePath(), JSON.stringify(cfg, null, 2), 'utf8')
 }
 
-function sanitizeName(s: string): string {
-  const c = String(s || '').replace(/[^A-Za-z0-9._-]/g, '_')
-  return c === '' ? 'config' : c
-}
-
-function nowTimestamp(): string {
-  const d = new Date()
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
-}
-
 function deviceName(): string {
   return process.env.COMPUTERNAME || process.env.HOSTNAME || hostname()
-}
-
-function fileNameOf(cfg: GistBackupConfig): string {
-  if (cfg.fileName && cfg.fileName.trim() !== '') {
-    return sanitizeName(cfg.fileName.trim()) + '.json'
-  }
-  const pre = sanitizeName(cfg.fileNamePrefix || 'config')
-  const dev = sanitizeName(cfg.deviceName || deviceName())
-  const t = nowTimestamp()
-  return dev ? `${pre}-${t}-${dev}.json` : `${pre}-${t}.json`
 }
 
 function parseGistId(input: string): string {
@@ -227,7 +208,7 @@ function classify(status: number, body: string): Result {
 
 async function createGist(token: string, content: string, host: string): Promise<Result> {
   const body = JSON.stringify({
-    description: 'dsh config backup',
+    description: 'dsh profile backup (dsh-market-gist-autosync)',
     public: false,
     files: { [GIST_FILENAME]: { content } },
   })
@@ -235,7 +216,7 @@ async function createGist(token: string, content: string, host: string): Promise
   if (r.netError) return err('network', r.netError)
   if (r.status !== 201) return classify(r.status, r.body)
   const data = JSON.parse(r.body)
-  return { ok: true, gistId: data.id, gistUrl: data.html_url || `https://gist.github.com/${data.id}` }
+  return { ok: true, gistId: data.id, gistUrl: data.html_url || `https://gist.github.com/${data.id}`, createdAt: data.created_at, updatedAt: data.updated_at }
 }
 
 async function updateGist(token: string, gistId: string, content: string, host: string): Promise<Result> {
@@ -246,7 +227,7 @@ async function updateGist(token: string, gistId: string, content: string, host: 
   if (r.netError) return err('network', r.netError)
   if (r.status !== 200) return classify(r.status, r.body)
   const data = JSON.parse(r.body)
-  return { ok: true, gistId: data.id || gistId, gistUrl: data.html_url || `https://gist.github.com/${gistId}` }
+  return { ok: true, gistId: data.id || gistId, gistUrl: data.html_url || `https://gist.github.com/${gistId}`, createdAt: data.created_at, updatedAt: data.updated_at }
 }
 
 async function verifyToken(token: string, host: string): Promise<Result> {
@@ -256,13 +237,7 @@ async function verifyToken(token: string, host: string): Promise<Result> {
   return { ok: true, message: '连接正常' }
 }
 
-/**
- * Resolve the Gist token, env first. DSH_GITHUB_TOKEN wins over the saved
- * config value so a scheduled backup can run without a token ever touching
- * disk (aligned with dshmarket's posture); the saved form value is the
- * fallback for interactive use.
- */
-const GIST_TOKEN_ENV = 'DSH_GITHUB_TOKEN'
+/** Resolve the Gist token, env first (DSH_GITHUB_TOKEN), config value as fallback. */
 function resolveToken(cfg: GistBackupConfig): { token: string; source: 'env' | 'config' } | null {
   const env = process.env[GIST_TOKEN_ENV]
   if (typeof env === 'string' && env.trim() !== '') return { token: env.trim(), source: 'env' }
@@ -271,116 +246,50 @@ function resolveToken(cfg: GistBackupConfig): { token: string; source: 'env' | '
   return null
 }
 
-const SKIP_NAMES = new Set(['node_modules', '.git', 'sessions', '.dsh-market', '.cache', '__pycache__', 'pnpm-lock.yaml', 'package-lock.json', 'yarn.lock'])
-const SECRET_HINT = /\.credentials|\.env|secrets?/i
-// Backups carry configuration, not skill resources/caches/logs. Only these
-// text extensions are collected from walked subtrees; binary assets (fonts,
-// schemas, pdfs, archives) and logs (.ndjson/.txt) are excluded — otherwise a
-// skills/ tree with fonts alone blows past the 1 MB Gist limit.
-const WALK_INCLUDE_EXT = new Set(['.json', '.yaml', '.yml', '.toml', '.md'])
-const WALK_MAX_FILE_BYTES = 256 * 1024
+// ---------------------------------------------------------------------------
+// Backup: collect the active profile exactly like dshmarket (single profile,
+// paths relative to the profile root), so the resulting gist is restorable by
+// dshmarket's own restore. package.json is stored as parsed json; other files
+// as line arrays.
+// ---------------------------------------------------------------------------
 
-/**
- * Backup file entry, aligned with dshmarket's `dsh-profile-backup` format:
- * `.json` files carry a parsed `json` object (so a restore can merge
- * dependencies/bundles instead of overwriting); every other text file carries
- * `lines` (content split on newlines). This makes our backups readable and
- * restorable by dshmarket's `validatedBackup` / `restoreProfileBackup`.
- */
 interface FileEntry {
   path: string
   json?: unknown
   lines?: string[]
 }
 
-/** Build one FileEntry in dshmarket shape: json for .json, lines otherwise. */
-function toEntry(rel: string, content: string): FileEntry {
-  if (rel.endsWith('.json')) {
-    try {
-      return { path: rel, json: JSON.parse(content) }
-    } catch {
-      // not valid JSON — fall through to lines
-    }
-  }
-  return { path: rel, lines: content.split(/\r?\n/) }
-}
-
-/** Read one file as a FileEntry, tolerating read failures (skipped). The size
- *  cap applies only to walked subtrees (skill resources); explicitly-selected
- *  root files like the skin are collected at full size. */
-function readEntry(root: string, rel: string, enforceCap: boolean): FileEntry | null {
-  try {
-    const abs = join(root, rel)
-    if (enforceCap && statSync(abs).size > WALK_MAX_FILE_BYTES) return null
-    return toEntry(rel, readFileSync(abs, 'utf8'))
-  } catch {
-    return null
+function profileFiles(root: string, dir: string, out: string[]): void {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (PROFILE_SKIP.has(entry.name) || /\.bak\b/.test(entry.name)) continue
+    if (entry.name === 'pnpm-lock.yaml') continue
+    const abs = resolve(dir, entry.name)
+    if (entry.isSymbolicLink()) continue
+    if (entry.isDirectory()) profileFiles(root, abs, out)
+    else if (entry.isFile()) out.push(resolve(abs).slice(root.length + 1).split(sep).join('/'))
+    if (out.length > MAX_BACKUP_FILES) throw new Error(`profile has more than ${MAX_BACKUP_FILES} configuration files`)
   }
 }
 
-/** Recursively collect config-like text files under a subtree. */
-function walkConfig(root: string, prefix: string, out: FileEntry[], depth: number): void {
-  if (depth > 4 || out.length > 250) return
-  let kids
-  try {
-    kids = readdirSync(join(root, prefix), { withFileTypes: true })
-  } catch {
-    return
-  }
-  for (const k of kids) {
-    if (SKIP_NAMES.has(k.name) || /\.bak\b/.test(k.name)) continue
-    const rel = prefix ? `${prefix}/${k.name}` : k.name
-    if (k.isDirectory()) {
-      walkConfig(root, rel, out, depth + 1)
-    } else if (k.isFile()) {
-      const dot = k.name.lastIndexOf('.')
-      const ext = dot === -1 ? '' : k.name.slice(dot).toLowerCase()
-      if (!WALK_INCLUDE_EXT.has(ext)) continue
-      const e = readEntry(root, rel, true)
-      if (e) out.push(e)
-    }
-  }
-}
-
-/**
- * Collect backup files according to the catalog selection. Required units are
- * always included; optional units only when their id is in cfg.include.
- */
-function collectFiles(root: string, cfg: GistBackupConfig): { files: FileEntry[]; containsSecrets: boolean } {
-  const files: FileEntry[] = []
-  const include = new Set(cfg.include || [])
-  const want = (id: string) => {
-    const unit = CATALOG.find((u) => u.id === id)
-    return unit !== undefined && (unit.required || include.has(id))
-  }
-  const push = (rel: string) => {
-    const e = readEntry(root, rel, false)
-    if (e) files.push(e)
-  }
-
-  // profile-core: the current profile's minimal rebuild recipe (dshmarket's set)
-  if (want('profile-core')) {
-    for (const f of ['package.json', 'cordis.patch.yml', 'cordis.yml', 'pnpm-workspace.yaml']) {
-      push(`profiles/desktop/${f}`)
-    }
-  }
-  // root-level single files
-  if (want('root-settings')) push('settings.yaml')
-  if (want('root-credentials')) push('.credentials.yaml')
-  if (want('root-skin')) push('dream-skin.json')
-  if (want('root-skill-hub')) push('dsh-skill-hub.json')
-  if (want('root-misc')) {
-    push('thinking-effort-loaded.json')
-    push('.anonymous-user-id')
-  }
-  // optional subtrees
-  if (want('profile-lock')) push('profiles/desktop/pnpm-lock.yaml')
-  if (want('skills-meta')) walkConfig(root, 'skills', files, 0)
-  if (want('profile-web')) walkConfig(root, 'profiles/web', files, 0)
-  if (want('agent-presets')) walkConfig(root, '.agent-presets', files, 0)
-
-  const containsSecrets = files.some((f) => SECRET_HINT.test(f.path))
+function collectProfileBackup(includeLock: boolean): { files: FileEntry[]; containsSecrets: boolean } {
+  const root = resolve(profileRoot())
+  const manifestFile = resolve(root, 'package.json')
+  if (!existsSync(manifestFile)) throw new Error('profile package.json is missing')
+  const relPaths: string[] = []
+  profileFiles(root, root, relPaths)
+  if (includeLock && existsSync(resolve(root, 'pnpm-lock.yaml'))) relPaths.push('pnpm-lock.yaml')
+  const files: FileEntry[] = relPaths.sort().map((path) => {
+    const content = readFileSync(resolve(root, path), 'utf8')
+    return path === 'package.json' ? { path, json: JSON.parse(content) } : { path, lines: content.split(/\r?\n/) }
+  })
+  if (!files.some((f) => f.path === 'package.json')) throw new Error('profile package.json is missing')
+  const containsSecrets = files.some((f) => /\.credentials|\.env|secrets?/i.test(f.path))
   return { files, containsSecrets }
+}
+
+/** Serialize the backup with 2-space indent so it reads well on the Gist web UI. */
+function serializeBackup(backup: unknown): string {
+  return JSON.stringify(backup, null, 2)
 }
 
 async function doTest(cfg: GistBackupConfig, host: string): Promise<Result> {
@@ -413,33 +322,49 @@ async function doBackup(cfg: GistBackupConfig, host: string): Promise<Result> {
     return err('invalid_gist', e instanceof Error ? e.message : String(e))
   }
   const token = resolved.token
-  const { files, containsSecrets } = collectFiles(dshHome(), cfg)
-  const envelope = {
-    format: 'dsh-config-gist-backup',
-    version: 1,
+  let files: FileEntry[]
+  let containsSecrets = false
+  try {
+    const collected = collectProfileBackup(cfg.includeLock)
+    files = collected.files
+    containsSecrets = collected.containsSecrets
+  } catch (e) {
+    return err('other', e instanceof Error ? e.message : String(e))
+  }
+  const backup = {
+    format: BACKUP_FORMAT,
+    version: BACKUP_VERSION,
     createdAt: new Date().toISOString(),
-    fileName: fileNameOf(cfg),
+    profile: activeProfile(),
     files,
   }
-  const content = JSON.stringify(envelope)
-  if (Buffer.byteLength(content) > GIST_MAX_BYTES) {
-    return err('too_large', '备份超过 GitHub Gist 1MB 限制')
+  const content = serializeBackup(backup)
+  const bytes = Buffer.byteLength(content)
+  if (bytes > GIST_MAX_BYTES) {
+    return err('too_large', `备份 ${(bytes / 1024).toFixed(0)}KB 超过 GitHub Gist 1MB 限制`)
   }
-  const ref = gid === '' ? await createGist(token, content, host) : await updateGist(token, gid, content, host)
+  const isNew = gid === ''
+  const ref = isNew ? await createGist(token, content, host) : await updateGist(token, gid, content, host)
   if (!ref.ok) return ref
-  return { ...ref, fileName: fileNameOf(cfg), at: new Date().toISOString(), containsSecrets }
+  // Persist the gist id so the user never has to look it up, and record the upload.
+  const newGistId = String(ref.gistId || gid)
+  const gistUrl = String(ref.gistUrl || `https://gist.github.com/${newGistId}`)
+  const record: UploadRecord = {
+    gistId: newGistId,
+    gistUrl,
+    bytes,
+    createdAt: String(ref.createdAt || new Date().toISOString()),
+    updatedAt: String(ref.updatedAt || new Date().toISOString()),
+  }
+  const next = { ...cfg, gistId: newGistId, uploads: [record, ...(cfg.uploads || [])].slice(0, MAX_UPLOAD_RECORDS) }
+  writeBackupConfig(next)
+  return { ok: true, gistId: newGistId, gistUrl, bytes, isNew, createdAt: record.createdAt, updatedAt: record.updatedAt, containsSecrets }
 }
 
 // ---------------------------------------------------------------------------
-// Restore: read a backup from a Gist and merge it back without clobbering
-// plugins already installed on this machine.
-//
-// Merge semantics (aligned with dshmarket's mergeRestoreManifest): the
-// package.json restore UNIONS bundles and overlays dependencies — current
-// entries stay, backup entries win on name conflicts — so a restore never
-// removes a plugin the target already has. We implement it ourselves (rather
-// than calling dshmarket) because our backups span the whole DSH_HOME, not a
-// single profile.
+// Restore: read a backup (ours or dshmarket's) from a Gist and write it back
+// into the active profile, merging package.json (union bundles, overlay deps)
+// so existing plugins survive. Atomic per-file writes + rollback on failure.
 // ---------------------------------------------------------------------------
 
 interface ParsedBackup {
@@ -448,7 +373,6 @@ interface ParsedBackup {
   files: FileEntry[]
 }
 
-/** Fetch + parse a backup from a Gist. Accepts both our format and dshmarket's. */
 async function readGistBackup(token: string, gistId: string, host: string): Promise<{ ok: true; backup: ParsedBackup } | { ok: false; code: string; error: string }> {
   const r = await gistHttp(token, 'GET', `/gists/${gistId}`, undefined, host)
   if (r.netError) return err('network', r.netError) as { ok: false; code: string; error: string }
@@ -459,12 +383,15 @@ async function readGistBackup(token: string, gistId: string, host: string): Prom
   } catch {
     return err('invalid_gist', 'Gist 响应不是有效 JSON') as { ok: false; code: string; error: string }
   }
-  const file = data.files?.[GIST_FILENAME]
-  const raw = file?.content
-  if (typeof raw !== 'string') return err('invalid_gist', `Gist 中找不到备份文件 ${GIST_FILENAME}`) as { ok: false; code: string; error: string }
+  // Accept our filename, dshmarket's filename, or the gist's single json file.
+  const filesObj = data.files ?? {}
+  const candidate = filesObj[GIST_FILENAME]?.content
+    ?? filesObj['dsh-config-backup.json']?.content
+    ?? (Object.values(filesObj).find((f) => typeof f?.content === 'string' && f.content.includes('"dsh-profile-backup"'))?.content)
+  if (typeof candidate !== 'string') return err('invalid_gist', 'Gist 中找不到 dsh 备份文件') as { ok: false; code: string; error: string }
   let parsed: ParsedBackup
   try {
-    parsed = JSON.parse(raw)
+    parsed = JSON.parse(candidate)
   } catch {
     return err('invalid_gist', '备份文件内容不是有效 JSON') as { ok: false; code: string; error: string }
   }
@@ -473,7 +400,7 @@ async function readGistBackup(token: string, gistId: string, host: string): Prom
   return { ok: true, backup: parsed }
 }
 
-/** Loose structural validation: accepts our multi-dir backups AND dshmarket's single-profile ones. */
+/** Loose structural validation accepting both our and dshmarket's backups. */
 function validateBackupShape(value: unknown): string | null {
   if (value === null || typeof value !== 'object') return '备份不是对象'
   const b = value as { format?: unknown; files?: unknown }
@@ -491,7 +418,6 @@ function validateBackupShape(value: unknown): string | null {
   return null
 }
 
-/** Serialize a FileEntry back to file content (inverse of toEntry). */
 function entryContent(file: FileEntry): string {
   if (file.json !== undefined) return JSON.stringify(file.json, null, 2) + '\n'
   return (file.lines ?? []).join('\n')
@@ -518,11 +444,6 @@ function mergeManifests(backupJson: Record<string, unknown>, current: Record<str
   return merged
 }
 
-/**
- * Restore a backup into $DSH_HOME with merge semantics + atomic writes + rollback.
- * The current profile's package.json is MERGED (deps overlaid, bundles unioned),
- * never replaced — so existing plugins survive. All other files are overwritten.
- */
 function restoreBackup(root: string, backup: ParsedBackup): { ok: true; restored: number; mergedManifest: boolean } | { ok: false; code: string; error: string } {
   const previous = new Map<string, Buffer | null>()
   const rollback = () => {
@@ -534,20 +455,18 @@ function restoreBackup(root: string, backup: ParsedBackup): { ok: true; restored
     }
   }
   let mergedManifest = false
+  const resolvedRoot = resolve(root)
   try {
     for (const file of backup.files) {
-      const target = resolve(root, file.path)
-      if (!target.startsWith(resolve(root) + sep) && target !== resolve(root, file.path)) {
-        // path escapes root (defensive; validateBackupShape already rejects ..)
+      const target = resolve(resolvedRoot, file.path)
+      if (target !== resolvedRoot && !target.startsWith(resolvedRoot + sep)) {
         throw new Error(`不安全的备份路径: ${file.path}`)
       }
-      // Refuse to overwrite anything that is not a plain file (symlink/dir).
       if (existsSync(target) && !lstatSync(target).isFile()) throw new Error(`目标不是普通文件: ${file.path}`)
       mkdirSync(dirname(target), { recursive: true })
       previous.set(target, existsSync(target) ? readFileSync(target) : null)
 
       let content: string
-      // Merge the profile manifest instead of overwriting it.
       if (file.json !== undefined && /(^|\/)package\.json$/.test(file.path) && existsSync(target)) {
         const current = JSON.parse(readFileSync(target, 'utf8')) as Record<string, unknown>
         content = JSON.stringify(mergeManifests(file.json as Record<string, unknown>, current), null, 2) + '\n'
@@ -578,10 +497,14 @@ async function doRestore(cfg: GistBackupConfig, host: string, gistInput: string)
   if (gid === '') return err('invalid_gist', '请提供要恢复的 Gist id 或 URL')
   const got = await readGistBackup(resolved.token, gid, host)
   if (!got.ok) return got
-  const result = restoreBackup(dshHome(), got.backup)
+  const result = restoreBackup(profileRoot(), got.backup)
   if (!result.ok) return result
-  return { ok: true, restored: result.restored, mergedManifest: result.mergedManifest, message: `已恢复 ${result.restored} 个文件${result.mergedManifest ? '（package.json 已合并，未覆盖现有插件）' : ''}。重启 DSH 后生效。` }
+  return { ok: true, restored: result.restored, mergedManifest: result.mergedManifest, message: `已恢复 ${result.restored} 个文件到 profile「${activeProfile()}」${result.mergedManifest ? '（package.json 已合并，未覆盖现有插件）' : ''}。重启 DSH 后生效。` }
 }
+
+// ---------------------------------------------------------------------------
+// RPC plumbing
+// ---------------------------------------------------------------------------
 
 function sendJson(response: { writeHead: (s: number, h: Record<string, string>) => void; end: (b?: string) => void }, status: number, value: unknown) {
   response.writeHead(status, {
@@ -617,13 +540,19 @@ async function readJsonBody(request: { on: (ev: string, cb: (c: Buffer) => void)
         reject(e)
       }
     })
+    request.on('error', reject)
   })
+}
+
+function scheduleIntervalMs(cfg: GistBackupConfig): number {
+  const v = Math.max(1, Number(cfg.scheduleIntervalValue) || 24)
+  return cfg.scheduleIntervalUnit === 'minute' ? v * 60 * 1000 : v * 60 * 60 * 1000
 }
 
 async function apply(ctx: any, rawConfig: any) {
   const apiHost: string = rawConfig?.gistApiHost ?? 'api.github.com'
 
-  let interval: NodeJS.Timeout | undefined
+  let interval: ReturnType<typeof setInterval> | undefined
 
   const schedule = (cfg: GistBackupConfig) => {
     if (interval) {
@@ -631,15 +560,13 @@ async function apply(ctx: any, rawConfig: any) {
       interval = undefined
     }
     if (cfg.scheduleEnabled) {
-      const hours = Math.max(1, cfg.scheduleIntervalHours || 24)
       interval = setInterval(() => {
-        doBackup(cfg, apiHost)
+        doBackup(readBackupConfig(), apiHost)
           .then((r) => {
             if (!r.ok) console.error(`[gist-autosync] scheduled backup failed: ${r.error}`)
           })
           .catch((e) => console.error(`[gist-autosync] scheduled backup error: ${e instanceof Error ? e.message : String(e)}`))
-      }, hours * 60 * 60 * 1000)
-      // do not keep the process alive solely for the timer
+      }, scheduleIntervalMs(cfg))
       interval.unref?.()
     }
   }
@@ -651,7 +578,6 @@ async function apply(ctx: any, rawConfig: any) {
         interval = undefined
       }
     }
-    // initial schedule from persisted config
     schedule(readBackupConfig())
     return stop
   })
@@ -671,12 +597,14 @@ async function apply(ctx: any, rawConfig: any) {
         const action = body.action
         if (action === 'getConfig') {
           const envToken = typeof process.env[GIST_TOKEN_ENV] === 'string' && process.env[GIST_TOKEN_ENV].trim() !== ''
-          sendJson(response, 200, { ok: true, config: readBackupConfig(), deviceNameDetected: deviceName(), catalog: CATALOG, envTokenSet: envToken })
+          sendJson(response, 200, { ok: true, config: readBackupConfig(), deviceNameDetected: deviceName(), activeProfile: activeProfile(), envTokenSet: envToken })
         } else if (action === 'saveConfig') {
-          const cfg = { ...DEFAULTS, ...(body.config as Partial<GistBackupConfig> || {}) }
+          const incoming = (body.config as Partial<GistBackupConfig>) || {}
+          const cfg = { ...readBackupConfig(), ...incoming }
           cfg.scheduleEnabled = Boolean(cfg.scheduleEnabled)
-          cfg.scheduleIntervalHours = Math.max(1, Number(cfg.scheduleIntervalHours) || 24)
-          cfg.include = Array.isArray(cfg.include) ? cfg.include.filter((x) => typeof x === 'string') : []
+          cfg.scheduleIntervalValue = Math.max(1, Number(cfg.scheduleIntervalValue) || 24)
+          cfg.scheduleIntervalUnit = cfg.scheduleIntervalUnit === 'minute' ? 'minute' : 'hour'
+          cfg.includeLock = Boolean(cfg.includeLock)
           writeBackupConfig(cfg)
           schedule(cfg)
           sendJson(response, 200, { ok: true, config: cfg })
@@ -687,6 +615,8 @@ async function apply(ctx: any, rawConfig: any) {
         } else if (action === 'restore') {
           const gistInput = typeof body.gist === 'string' ? body.gist : ''
           sendJson(response, 200, await doRestore(readBackupConfig(), apiHost, gistInput))
+        } else if (action === 'listUploads') {
+          sendJson(response, 200, { ok: true, uploads: readBackupConfig().uploads || [] })
         } else {
           sendJson(response, 400, { ok: false, code: 'invalid_action', error: 'invalid action' })
         }
@@ -703,4 +633,4 @@ async function apply(ctx: any, rawConfig: any) {
 
 export { name, inject, Config, apply }
 // Exported for tests: merge/restore primitives (verify merge keeps existing plugins).
-export { mergeManifests, restoreBackup, validateBackupShape }
+export { mergeManifests, restoreBackup, validateBackupShape, collectProfileBackup, serializeBackup }
