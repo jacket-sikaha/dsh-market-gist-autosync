@@ -21,14 +21,17 @@ import {
   scheduleIntervalMs,
   GIST_TOKEN_ENV,
   type GistBackupConfig,
+  type UploadRecord,
 } from './config.js'
 import { doBackup, doRestore, doTest } from './operations.js'
 import { sendJson, sameOrigin, readJsonBody } from './rpc.js'
+import { openUploadStore, migrateLegacyUploads, type UploadStore } from './storage.js'
 import type { InstallProgress } from './install.js'
 // Re-export test surface so existing scripts keep working.
 export { mergeManifests, restoreBackup } from './restore.js'
 export { validateBackupStrict, collectProfileBackup, serializeBackup } from './backup.js'
 export { installRestoredDeps } from './install.js'
+export { openUploadStore, migrateLegacyUploads, uploadDomainSpec } from './storage.js'
 
 const name = 'dsh-market-gist-autosync'
 
@@ -66,6 +69,53 @@ async function apply(ctx: any, rawConfig: any) {
 
   let interval: ReturnType<typeof setInterval> | undefined
 
+  // Upload records live in the dsh-storage domain (schema-validated, crash-safe
+  // KV), not in the settings file. The store opens asynchronously; handlers
+  // await this promise and fall back to the legacy config.json array when the
+  // service is unavailable.
+  const storePromise: Promise<UploadStore | null> = openUploadStore(ctx)
+    .then(async (store) => {
+      if (store) {
+        const moved = await migrateLegacyUploads(store)
+        if (moved > 0) ctx.logger?.info?.(`migrated ${moved} legacy upload record(s) into the storage domain`)
+      }
+      return store
+    })
+    .catch((e) => {
+      console.error(`[gist-autosync] storage domain unavailable, falling back to config.json: ${e instanceof Error ? e.message : String(e)}`)
+      return null
+    })
+
+  const listUploads = async (): Promise<UploadRecord[]> => {
+    const store = await storePromise
+    if (store) return store.list()
+    return (readBackupConfig().uploads || []).filter((u) => typeof u?.gistId === 'string')
+  }
+
+  /** Persist the record doBackup produced (store when available, else legacy). */
+  const recordUpload = async (record: UploadRecord): Promise<void> => {
+    const store = await storePromise
+    if (store) {
+      await store.put(record)
+    } else {
+      const cfg = readBackupConfig()
+      writeBackupConfig({ ...cfg, uploads: [record, ...(cfg.uploads || [])].slice(0, 20) })
+    }
+  }
+
+  /** doBackup + record persistence, shared by the timer and the RPC. */
+  const runBackup = async () => {
+    const r = await doBackup(readBackupConfig(), apiHost)
+    if (r.ok && r.record) {
+      try {
+        await recordUpload(r.record as UploadRecord)
+      } catch (e) {
+        console.error(`[gist-autosync] failed to record upload: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    return r
+  }
+
   const schedule = (cfg: GistBackupConfig) => {
     if (interval) {
       clearInterval(interval)
@@ -73,7 +123,7 @@ async function apply(ctx: any, rawConfig: any) {
     }
     if (cfg.scheduleEnabled) {
       interval = setInterval(() => {
-        doBackup(readBackupConfig(), apiHost)
+        runBackup()
           .then((r) => {
             if (!r.ok) console.error(`[gist-autosync] scheduled backup failed: ${r.error}`)
           })
@@ -89,6 +139,8 @@ async function apply(ctx: any, rawConfig: any) {
         clearInterval(interval)
         interval = undefined
       }
+      // Release the domain handle when this fiber stops.
+      void storePromise.then((store) => store?.close()).catch(() => {})
     }
     schedule(readBackupConfig())
     return stop
@@ -109,7 +161,8 @@ async function apply(ctx: any, rawConfig: any) {
         const action = body.action
         if (action === 'getConfig') {
           const envToken = typeof process.env[GIST_TOKEN_ENV] === 'string' && process.env[GIST_TOKEN_ENV].trim() !== ''
-          sendJson(response, 200, { ok: true, config: readBackupConfig(), deviceNameDetected: deviceName(), activeProfile: activeProfile(), envTokenSet: envToken })
+          const cfg = readBackupConfig()
+          sendJson(response, 200, { ok: true, config: { ...cfg, uploads: await listUploads() }, deviceNameDetected: deviceName(), activeProfile: activeProfile(), envTokenSet: envToken })
         } else if (action === 'saveConfig') {
           const incoming = (body.config as Partial<GistBackupConfig>) || {}
           const cfg = { ...readBackupConfig(), ...incoming }
@@ -123,7 +176,7 @@ async function apply(ctx: any, rawConfig: any) {
         } else if (action === 'testConnection') {
           sendJson(response, 200, await doTest(readBackupConfig(), apiHost))
         } else if (action === 'backupNow') {
-          sendJson(response, 200, await doBackup(readBackupConfig(), apiHost))
+          sendJson(response, 200, await runBackup())
         } else if (action === 'restore') {
           const gistInput = typeof body.gist === 'string' ? body.gist : ''
           restoreProgress = { active: true, lines: [], done: false }
@@ -137,7 +190,7 @@ async function apply(ctx: any, rawConfig: any) {
         } else if (action === 'restoreProgress') {
           sendJson(response, 200, { ok: true, ...restoreProgress })
         } else if (action === 'listUploads') {
-          sendJson(response, 200, { ok: true, uploads: readBackupConfig().uploads || [] })
+          sendJson(response, 200, { ok: true, uploads: await listUploads() })
         } else {
           sendJson(response, 400, { ok: false, code: 'invalid_action', error: 'invalid action' })
         }

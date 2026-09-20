@@ -7,6 +7,7 @@
 import {
   GIST_MAX_BYTES,
   activeProfile,
+  deviceName,
   err,
   parseGistId,
   readBackupConfig,
@@ -16,7 +17,6 @@ import {
   type GistBackupConfig,
   type Result,
   type UploadRecord,
-  MAX_UPLOAD_RECORDS,
 } from './config.js'
 import { createGist, updateGist, verifyToken, readGistBackupContent, gistHttp, classify } from './gist.js'
 import { collectProfileBackup, serializeBackup, buildBackupEnvelope, validateBackupStrict, type ParsedBackup } from './backup.js'
@@ -73,19 +73,20 @@ export async function doBackup(cfg: GistBackupConfig, host: string): Promise<Res
   const isNew = gid === ''
   const ref = isNew ? await createGist(token, content, host) : await updateGist(token, gid, content, host)
   if (!ref.ok) return ref
-  // Persist the gist id so the user never has to look it up, and record the upload.
+  // Persist the gist id so the user never has to look it up. The upload record
+  // itself is returned to the caller, which stores it in the storage domain
+  // (history does not belong in the settings file).
   const newGistId = String(ref.gistId || gid)
   const gistUrl = String(ref.gistUrl || `https://gist.github.com/${newGistId}`)
   const record: UploadRecord = {
     gistId: newGistId,
-    gistUrl,
+    deviceName: cfg.deviceName.trim() || deviceName(),
+    uploadedAt: new Date().toISOString(),
+    status: isNew ? 'new' : 'update',
     bytes,
-    createdAt: String(ref.createdAt || new Date().toISOString()),
-    updatedAt: String(ref.updatedAt || new Date().toISOString()),
   }
-  const next = { ...cfg, gistId: newGistId, uploads: [record, ...(cfg.uploads || [])].slice(0, MAX_UPLOAD_RECORDS) }
-  writeBackupConfig(next)
-  return { ok: true, gistId: newGistId, gistUrl, bytes, isNew, createdAt: record.createdAt, updatedAt: record.updatedAt, containsSecrets }
+  writeBackupConfig({ ...cfg, gistId: newGistId })
+  return { ok: true, gistId: newGistId, gistUrl, bytes, isNew, record, containsSecrets }
 }
 
 export async function doRestore(

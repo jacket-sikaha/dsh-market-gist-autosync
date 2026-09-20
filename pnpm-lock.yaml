@@ -11,6 +11,9 @@ importers:
       '@deepseek-ai/cordis':
         specifier: ^4.0.2
         version: 4.0.2
+      '@deepseek-ai/dsh-storage-domain':
+        specifier: link:D:/software/DSH Desktop/resources/app/node_modules/@deepseek-ai/dsh-storage-domain
+        version: link:../../software/DSH Desktop/resources/app/node_modules/@deepseek-ai/dsh-storage-domain
       '@deepseek-ai/schemastery':
         specifier: ^3.18.2
         version: 3.18.2

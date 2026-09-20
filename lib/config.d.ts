@@ -16,10 +16,15 @@ export declare const MAX_UPLOAD_RECORDS = 20;
 export declare function activeProfile(): string;
 export interface UploadRecord {
     gistId: string;
-    gistUrl: string;
+    deviceName: string;
+    uploadedAt: string;
+    /** 'new' = created a fresh gist; 'update' = overwrote an existing one. */
+    status: 'new' | 'update';
     bytes: number;
-    createdAt: string;
-    updatedAt: string;
+    /** Legacy fields kept optional so pre-domain config.json still parses. */
+    gistUrl?: string;
+    createdAt?: string;
+    updatedAt?: string;
 }
 export interface GistBackupConfig {
     gistToken: string;

@@ -16,6 +16,7 @@ import z from '@deepseek-ai/schemastery';
 export { mergeManifests, restoreBackup } from './restore.js';
 export { validateBackupStrict, collectProfileBackup, serializeBackup } from './backup.js';
 export { installRestoredDeps } from './install.js';
+export { openUploadStore, migrateLegacyUploads, uploadDomainSpec } from './storage.js';
 declare const name = "dsh-market-gist-autosync";
 declare const inject: string[];
 declare const Config: z<Schemastery.ObjectS<{

@@ -33,6 +33,7 @@ export default defineConfig({
       external: (id) =>
         id.startsWith('node:') ||
         id === '@deepseek-ai/schemastery' ||
+        id === '@deepseek-ai/dsh-storage-domain' ||
         id.startsWith('@deepseek-ai/cordis'),
       output: {
         // Deterministic single-file output; no code splitting (the loader

@@ -161,10 +161,11 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
       setState({ busy: true });
       rpc("backupNow").then(function (r) {
         if (r.ok) {
-          // refresh uploads + gistId after a successful backup
-          var uploads = state[0].uploads.slice();
-          uploads.unshift({ gistId: r.gistId, gistUrl: r.gistUrl, bytes: r.bytes, createdAt: r.createdAt, updatedAt: r.updatedAt });
-          setState({ busy: false, gistId: r.gistId, uploads: uploads.slice(0, 20) });
+          // Records now live in the host's storage domain — refetch rather than
+          // constructing the row client-side.
+          rpc("listUploads").then(function (u) {
+            setState({ busy: false, gistId: r.gistId, uploads: (u && u.uploads) || [] });
+          }).catch(function () { setState({ busy: false, gistId: r.gistId }); });
           showMessage({ ok: true, message: "备份成功 " + fmtBytes(r.bytes) });
         } else {
           setState({ busy: false });
@@ -284,18 +285,33 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
       React.createElement(SectionTitle, null, "上传记录"),
       (s.uploads && s.uploads.length > 0)
         ? React.createElement("div", { style: { border: "1px solid #e5e7eb", borderRadius: 8, overflow: "hidden" } },
+            // 表头
+            React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 90px 150px 64px 70px", gap: 8, padding: "6px 12px", fontSize: 11, color: "#8b93a1", background: "#f6f8fa", borderBottom: "1px solid #e5e7eb" } },
+              React.createElement("span", null, "Gist ID"),
+              React.createElement("span", null, "设备"),
+              React.createElement("span", null, "上传时间"),
+              React.createElement("span", null, "状态"),
+              React.createElement("span", { style: { textAlign: "right" } }, "大小")
+            ),
             s.uploads.map(function (u, idx) {
+              var isNew = u.status === "new";
+              var badgeStyle = {
+                display: "inline-block", padding: "1px 7px", borderRadius: 10, fontSize: 11, lineHeight: "16px",
+                background: isNew ? "#e8f0fe" : "#f0f1f3", color: isNew ? "#1a56db" : "#4b5563"
+              };
               return React.createElement("div", {
-                key: u.gistId + idx,
-                style: { padding: "8px 12px", borderTop: idx === 0 ? "none" : "1px solid #f0f1f3", fontSize: 12 }
+                key: (u.uploadedAt || "") + idx,
+                style: { display: "grid", gridTemplateColumns: "1fr 90px 150px 64px 70px", gap: 8, padding: "7px 12px", borderTop: "1px solid #f0f1f3", fontSize: 12, alignItems: "center" }
               },
-                React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 } },
-                  React.createElement("a", { href: u.gistUrl, target: "_blank", rel: "noreferrer", style: { color: "#4f6ef7", textDecoration: "none", fontFamily: "monospace", fontSize: 12 } }, u.gistId),
-                  React.createElement("span", { style: { color: "#8b93a1", whiteSpace: "nowrap" } }, fmtBytes(u.bytes))
-                ),
-                React.createElement("div", { style: { color: "#8b93a1", marginTop: 3, fontSize: 11 } },
-                  "创建 " + fmtTime(u.createdAt) + " · 更新 " + fmtTime(u.updatedAt)
-                )
+                React.createElement("a", {
+                  href: "https://gist.github.com/" + u.gistId, target: "_blank", rel: "noreferrer",
+                  style: { color: "#4f6ef7", textDecoration: "none", fontFamily: "monospace", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+                  title: u.gistId
+                }, u.gistId),
+                React.createElement("span", { style: { color: "#4b5563", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, title: u.deviceName }, u.deviceName || "-"),
+                React.createElement("span", { style: { color: "#8b93a1", fontSize: 11 } }, fmtTime(u.uploadedAt)),
+                React.createElement("span", { style: badgeStyle }, isNew ? "新建" : "更新"),
+                React.createElement("span", { style: { color: "#8b93a1", textAlign: "right" } }, fmtBytes(u.bytes))
               );
             })
           )
