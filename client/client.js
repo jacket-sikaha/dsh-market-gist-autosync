@@ -158,21 +158,34 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
     }
 
     function backup() {
+      // Pass the current field value: empty really means "create a fresh gist",
+      // instead of silently reusing the last-saved gistId on disk.
+      var gistField = state[0].gistId;
       setState({ busy: true });
-      rpc("backupNow").then(function (r) {
+      rpc("backupNow", { gist: gistField }).then(function (r) {
         if (r.ok) {
           // Records now live in the host's storage domain — refetch rather than
           // constructing the row client-side.
           rpc("listUploads").then(function (u) {
             setState({ busy: false, gistId: r.gistId, uploads: (u && u.uploads) || [] });
           }).catch(function () { setState({ busy: false, gistId: r.gistId }); });
-          showMessage({ ok: true, message: "备份成功 " + fmtBytes(r.bytes) });
+          showMessage({ ok: true, message: "备份成功 " + fmtBytes(r.bytes) + (r.isNew ? "（已新建 Gist）" : "") });
         } else {
           setState({ busy: false });
           showMessage(r);
         }
       }).catch(function (e) {
         setState({ busy: false, message: { ok: false, text: String(e) } });
+      });
+    }
+
+    function clearUploads() {
+      if (!window.confirm("确定清空所有上传记录？此操作不可撤销。")) return;
+      rpc("clearUploads").then(function () {
+        setState({ uploads: [] });
+        showMessage({ ok: true, message: "上传记录已清空" });
+      }).catch(function (e) {
+        showMessage({ ok: false, text: String(e) });
       });
     }
 
@@ -282,7 +295,15 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
         : null,
 
       // ===== 上传记录 =====
-      React.createElement(SectionTitle, null, "上传记录"),
+      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", margin: "20px 0 8px" } },
+        React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: "#4b5563" } }, "上传记录"),
+        (s.uploads && s.uploads.length > 0)
+          ? React.createElement("button", {
+              onClick: clearUploads,
+              style: { border: "1px solid #e5e7eb", borderRadius: 6, padding: "2px 10px", fontSize: 12, background: "#fff", color: "#b91c1c", cursor: "pointer" }
+            }, "清空记录")
+          : null
+      ),
       (s.uploads && s.uploads.length > 0)
         ? React.createElement("div", { style: { border: "1px solid #e5e7eb", borderRadius: 8, overflow: "hidden" } },
             // 表头

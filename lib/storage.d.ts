@@ -4,6 +4,7 @@ export declare const uploadDomainSpec: import("@deepseek-ai/dsh-storage-domain")
 export interface UploadStore {
     put(record: UploadRecord): Promise<void>;
     list(): UploadRecord[];
+    clear(): Promise<void>;
     close(): Promise<void>;
 }
 /**

@@ -8,5 +8,11 @@ import { type GistBackupConfig, type Result } from './config.js';
 import { type InstallProgress } from './install.js';
 export type ProgressFn = (p: InstallProgress) => void;
 export declare function doTest(cfg: GistBackupConfig, host: string): Promise<Result>;
-export declare function doBackup(cfg: GistBackupConfig, host: string): Promise<Result>;
+/**
+ * gistOverride: when provided (including the empty string), it is the source of
+ * truth for which gist to update — the UI field value, so "clear the field and
+ * back up" really creates a fresh gist. undefined = use cfg.gistId (scheduled
+ * backups, which have no UI context).
+ */
+export declare function doBackup(cfg: GistBackupConfig, host: string, gistOverride?: string): Promise<Result>;
 export declare function doRestore(cfg: GistBackupConfig, host: string, gistInput: string, onProgress?: ProgressFn): Promise<Result>;

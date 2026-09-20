@@ -45,12 +45,18 @@ export async function doTest(cfg: GistBackupConfig, host: string): Promise<Resul
   return { ok: true, message: `连接正常（token 来源：${resolved.source === 'env' ? '环境变量' : '已保存配置'}）` }
 }
 
-export async function doBackup(cfg: GistBackupConfig, host: string): Promise<Result> {
+/**
+ * gistOverride: when provided (including the empty string), it is the source of
+ * truth for which gist to update — the UI field value, so "clear the field and
+ * back up" really creates a fresh gist. undefined = use cfg.gistId (scheduled
+ * backups, which have no UI context).
+ */
+export async function doBackup(cfg: GistBackupConfig, host: string, gistOverride?: string): Promise<Result> {
   const resolved = resolveToken(cfg)
   if (!resolved) return err('no_token', '未配置 Gist token（请在下方填写，或设置环境变量 DSH_GITHUB_TOKEN）')
   let gid: string
   try {
-    gid = parseGistId(cfg.gistId)
+    gid = parseGistId(gistOverride !== undefined ? gistOverride : cfg.gistId)
   } catch (e) {
     return err('invalid_gist', e instanceof Error ? e.message : String(e))
   }

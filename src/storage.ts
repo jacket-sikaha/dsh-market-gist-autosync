@@ -33,6 +33,7 @@ export const uploadDomainSpec = defineDomain({
 export interface UploadStore {
   put(record: UploadRecord): Promise<void>
   list(): UploadRecord[]
+  clear(): Promise<void>
   close(): Promise<void>
 }
 
@@ -59,6 +60,9 @@ export async function openUploadStore(ctx: any): Promise<UploadStore | null> {
       return (table.entries() as [string, UploadRecord][])
         .map(([, v]) => v)
         .sort((a, b) => (a.uploadedAt < b.uploadedAt ? 1 : -1))
+    },
+    async clear() {
+      for (const key of table.keys() as string[]) await table.delete(key)
     },
     async close() {
       await domain.close()

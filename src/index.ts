@@ -104,8 +104,8 @@ async function apply(ctx: any, rawConfig: any) {
   }
 
   /** doBackup + record persistence, shared by the timer and the RPC. */
-  const runBackup = async () => {
-    const r = await doBackup(readBackupConfig(), apiHost)
+  const runBackup = async (gistOverride?: string) => {
+    const r = await doBackup(readBackupConfig(), apiHost, gistOverride)
     if (r.ok && r.record) {
       try {
         await recordUpload(r.record as UploadRecord)
@@ -114,6 +114,17 @@ async function apply(ctx: any, rawConfig: any) {
       }
     }
     return r
+  }
+
+  /** Wipe upload history (domain store when available, else legacy file). */
+  const clearUploads = async (): Promise<void> => {
+    const store = await storePromise
+    if (store) {
+      await store.clear()
+    } else {
+      const cfg = readBackupConfig()
+      writeBackupConfig({ ...cfg, uploads: [] })
+    }
   }
 
   const schedule = (cfg: GistBackupConfig) => {
@@ -176,7 +187,10 @@ async function apply(ctx: any, rawConfig: any) {
         } else if (action === 'testConnection') {
           sendJson(response, 200, await doTest(readBackupConfig(), apiHost))
         } else if (action === 'backupNow') {
-          sendJson(response, 200, await runBackup())
+          // The UI field is the source of truth for a manual backup: pass it
+          // through even when empty (empty = create a fresh gist), instead of
+          // silently falling back to the last-saved gistId on disk.
+          sendJson(response, 200, await runBackup(typeof body.gist === 'string' ? body.gist : undefined))
         } else if (action === 'restore') {
           const gistInput = typeof body.gist === 'string' ? body.gist : ''
           restoreProgress = { active: true, lines: [], done: false }
@@ -191,6 +205,9 @@ async function apply(ctx: any, rawConfig: any) {
           sendJson(response, 200, { ok: true, ...restoreProgress })
         } else if (action === 'listUploads') {
           sendJson(response, 200, { ok: true, uploads: await listUploads() })
+        } else if (action === 'clearUploads') {
+          await clearUploads()
+          sendJson(response, 200, { ok: true })
         } else {
           sendJson(response, 400, { ok: false, code: 'invalid_action', error: 'invalid action' })
         }

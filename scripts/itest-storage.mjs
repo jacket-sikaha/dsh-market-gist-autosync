@@ -106,6 +106,11 @@ check('migration idempotent (0 moved again)', movedAgain === 0)
 const nullStore = await openUploadStore({ get: () => undefined })
 check('openUploadStore returns null without service', nullStore === null)
 
+// 7) clear wipes every record
+check('store2 has records before clear', store2.list().length > 0)
+await store2.clear()
+check('clear() empties the store', store2.list().length === 0)
+
 await store.close()
 console.log(`\n${fail === 0 ? 'PASS' : 'FAIL'} — ${pass}/${pass + fail} storage-domain cases`)
 process.exit(fail === 0 ? 0 : 1)
