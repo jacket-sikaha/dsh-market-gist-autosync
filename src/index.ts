@@ -21,6 +21,7 @@ import {
   writeBackupConfig,
   scheduleIntervalMs,
   GIST_TOKEN_ENV,
+  MAX_UPLOAD_RECORDS,
   type GistBackupConfig,
   type UploadRecord,
 } from './config.js'
@@ -76,26 +77,60 @@ async function apply(ctx: any, rawConfig: any) {
   let interval: ReturnType<typeof setInterval> | undefined
 
   // Upload records live in the dsh-storage domain (schema-validated, crash-safe
-  // KV), not in the settings file. The store opens asynchronously; handlers
-  // await this promise and fall back to the legacy config.json array when the
-  // service is unavailable.
-  const storePromise: Promise<UploadStore | null> = openUploadStore(ctx)
-    .then(async (store) => {
-      if (store) {
-        const moved = await migrateLegacyUploads(store)
-        if (moved > 0) ctx.logger?.info?.(`migrated ${moved} legacy upload record(s) into the storage domain`)
+  // KV), not in the settings file.
+  //
+  // The domain service is PROVIDED ASYNCHRONOUSLY by @deepseek-ai/dsh-storage-domain
+  // (it waits for its own storage backend via ctx.inject before calling
+  // provide('storageDomain')). A one-shot ctx.get() at apply() time therefore
+  // races that provisioning: when it loses, the plugin used to fall back to
+  // config.json permanently and records split across the two stores. Retry
+  // until the service appears, so the store is opened once it is available.
+  const STORAGE_OPEN_RETRY_MS = 250
+  const STORAGE_OPEN_TIMEOUT_MS = 15_000
+  const openStoreWhenReady = async (): Promise<UploadStore | null> => {
+    const deadline = Date.now() + STORAGE_OPEN_TIMEOUT_MS
+    for (;;) {
+      try {
+        const store = await openUploadStore(ctx)
+        if (store) {
+          const moved = await migrateLegacyUploads(store)
+          if (moved > 0) ctx.logger?.info?.('migrated legacy upload record(s) into the storage domain')
+          return store
+        }
+      } catch (e) {
+        console.error('[gist-autosync] storage domain open failed: ' + (e instanceof Error ? e.message : String(e)))
       }
-      return store
-    })
-    .catch((e) => {
-      console.error(`[gist-autosync] storage domain unavailable, falling back to config.json: ${e instanceof Error ? e.message : String(e)}`)
-      return null
-    })
+      if (Date.now() >= deadline) {
+        console.error('[gist-autosync] storage domain unavailable after retries, falling back to config.json')
+        return null
+      }
+      await new Promise((resolve) => setTimeout(resolve, STORAGE_OPEN_RETRY_MS))
+    }
+  }
+  const storePromise: Promise<UploadStore | null> = openStoreWhenReady()
 
+  /**
+   * Upload records, MERGED from both stores.
+   *
+   * The domain is the destination, but config.json rows written by an earlier
+   * layout (or by a boot that lost the provisioning race before this fix) are
+   * still real history and must not disappear from the UI. Merge by
+   * (gistId, uploadedAt) and keep the newest MAX_UPLOAD_RECORDS.
+   */
   const listUploads = async (): Promise<UploadRecord[]> => {
+    const legacy = (readBackupConfig().uploads || []).filter((u) => typeof u?.gistId === 'string')
     const store = await storePromise
-    if (store) return store.list()
-    return (readBackupConfig().uploads || []).filter((u) => typeof u?.gistId === 'string')
+    if (!store) return legacy
+    const seen = new Set<string>()
+    const merged: UploadRecord[] = []
+    for (const u of [...store.list(), ...legacy]) {
+      const key = u.gistId + '|' + u.uploadedAt
+      if (seen.has(key)) continue
+      seen.add(key)
+      merged.push(u)
+    }
+    merged.sort((a, b) => (a.uploadedAt < b.uploadedAt ? 1 : -1))
+    return merged.slice(0, MAX_UPLOAD_RECORDS)
   }
 
   /** Persist the record doBackup produced (store when available, else legacy). */
