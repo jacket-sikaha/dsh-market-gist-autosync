@@ -1,5 +1,18 @@
-import { Context } from '@deepseek-ai/cordis'
-import { name, inject, Config, apply } from '../lib/index.js'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, dirname } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+// Isolate DSH_HOME BEFORE loading the plugin, so the smoke test never touches
+// the real ~/.dsh/gist-autosync/config.json. DSH_HOME is read lazily, but
+// static imports are hoisted — both imports must be dynamic.
+const home = mkdtempSync(join(tmpdir(), 'gist-smoke-'))
+process.env.DSH_HOME = home
+
+const { Context } = await import('@deepseek-ai/cordis')
+const { name, inject, Config, apply } = await import(
+  pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), '..', 'lib', 'index.js')).href,
+)
 
 // Capture the route the plugin registers, so we can drive its handler directly
 // (bypassing the desktop webServer's browser-only auth gate).
@@ -60,9 +73,7 @@ console.log('testConnection (no token) ->', JSON.stringify(test))
 
 // 4) saveConfig must persist the token to disk (write path)
 const fs = await import('node:fs')
-const os = await import('node:os')
-const path = await import('node:path')
-const cfgPath = path.join(os.homedir(), '.dsh', 'gist-autosync', 'config.json')
+const cfgPath = join(home, 'gist-autosync', 'config.json')
 // Save a fake token through the RPC, then read the file back
 const save = await call('saveConfig', { config: {
   gistToken: 'ghp_SMOKE_TEST_TOKEN', gistId: '', fileNamePrefix: 'config',
