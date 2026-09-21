@@ -36,6 +36,9 @@
     }
   },
   "dsh": {
+    "engines": {
+      "dsh": ">=0.1.1-rc.1"
+    },
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
@@ -57,6 +60,16 @@
     "cordis"
   ],
   "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jacket-sikaha/dsh-market-gist-autosync.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
     "@deepseek-ai/dsh-storage-domain": "0.1.5-rc.2",
