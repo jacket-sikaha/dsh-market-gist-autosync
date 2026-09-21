@@ -4,3 +4,4 @@ node_modules/
 .vscode/ 
 .diagnostics-unzip/ 
 debug.log
+.npmrc
