@@ -22,9 +22,48 @@ export const MAX_BACKUP_FILES = 256
 export const PROFILE_SKIP = new Set(['node_modules', '.dsh-market', '.git'])
 export const MAX_UPLOAD_RECORDS = 20
 
-/** The active profile this backup covers (matches the desktop profile dir). */
+/**
+ * The profile this host process actually booted, resolved once in apply() via
+ * initProfileContext() and consumed by the pure functions below.
+ *
+ * Detection order (mirrors dshmarket's src/index.ts):
+ *   1. DSH Desktop's `desktopProfiles` service (`current.name`/`current.dir`) —
+ *      authoritative on Desktop, present before Loader entries mount.
+ *   2. `--profile <name>` in process.argv — how plain `dsh web` is launched.
+ *   3. DSH_PROFILE env — test/escape hatch (the runtime itself never sets it).
+ *   4. 'desktop' — historical default.
+ */
+let detectedProfile: { name: string; dir?: string } | undefined
+
+export function initProfileContext(ctx: { get?: (key: string) => unknown }): void {
+  // Re-resolve from scratch on every call: a fresh init must not inherit a
+  // profile detected by an earlier one.
+  detectedProfile = undefined
+  const dp = ctx?.get?.('desktopProfiles') as { current?: { name?: unknown; dir?: unknown } } | undefined
+  const current = dp?.current
+  if (current && typeof current.name === 'string' && current.name !== '') {
+    detectedProfile = {
+      name: current.name,
+      dir: typeof current.dir === 'string' && current.dir !== '' ? current.dir : undefined,
+    }
+    return
+  }
+  const argv = process.argv
+  const flag = argv.indexOf('--profile')
+  if (flag !== -1 && flag + 1 < argv.length) {
+    const value = argv[flag + 1]
+    if (!value.startsWith('-')) {
+      detectedProfile = { name: value }
+      return
+    }
+  }
+  const env = process.env.DSH_PROFILE
+  if (typeof env === 'string' && env.trim() !== '') detectedProfile = { name: env.trim() }
+}
+
+/** The active profile this backup covers (the profile this host booted). */
 export function activeProfile(): string {
-  return process.env.DSH_PROFILE || 'desktop'
+  return detectedProfile?.name ?? process.env.DSH_PROFILE ?? 'desktop'
 }
 
 export interface UploadRecord {
@@ -75,7 +114,9 @@ export function dshHome(): string {
 }
 
 export function profileRoot(): string {
-  return join(dshHome(), 'profiles', activeProfile())
+  // Prefer the dir the host reported (Desktop owns the active profile location
+  // and it may not sit under $DSH_HOME/profiles).
+  return detectedProfile?.dir ?? join(dshHome(), 'profiles', activeProfile())
 }
 
 export function configDirPath(): string {

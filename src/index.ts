@@ -16,6 +16,7 @@ import z from '@deepseek-ai/schemastery'
 import {
   deviceName,
   activeProfile,
+  initProfileContext,
   readBackupConfig,
   writeBackupConfig,
   scheduleIntervalMs,
@@ -32,6 +33,7 @@ export { mergeManifests, restoreBackup } from './restore.js'
 export { validateBackupStrict, collectProfileBackup, serializeBackup } from './backup.js'
 export { installRestoredDeps } from './install.js'
 export { openUploadStore, migrateLegacyUploads, uploadDomainSpec } from './storage.js'
+export { initProfileContext, activeProfile } from './config.js'
 
 const name = 'dsh-market-gist-autosync'
 
@@ -66,6 +68,10 @@ function progressToLine(p: InstallProgress): string {
 
 async function apply(ctx: any, rawConfig: any) {
   const apiHost: string = rawConfig?.gistApiHost ?? 'api.github.com'
+
+  // Resolve the booted profile (desktopProfiles on Desktop, --profile argv on
+  // plain dsh web) BEFORE anything reads activeProfile()/profileRoot().
+  initProfileContext(ctx)
 
   let interval: ReturnType<typeof setInterval> | undefined
 

@@ -4,7 +4,7 @@
 
 ## 功能
 
-- **备份**：把当前 profile（`DSH_PROFILE`，默认 `desktop`）的配置打包为私有 Gist
+- **备份**：把当前 profile 的配置打包为私有 Gist（自动识别 desktop / web，见下文「多 profile 支持」）
 - **定时备份**：分钟 / 小时粒度，自持调度，随配置保存即时生效
 - **恢复**：合并语义 —— `package.json` 与现有插件合并（**不删除已装插件**），其他配置文件覆盖；恢复后自动 `pnpm install` 缺失依赖并显示实时进度；依赖全部安装失败时自动回滚文件写入
 - **上传记录**：最近 20 条，存 dsh-storage 域（不可用时回退 `config.json`），支持一键清空
@@ -15,10 +15,22 @@
 ## 安装
 
 ```bash
-dsh plugin --profile desktop add dsh-market-gist-autosync
+dsh plugin --profile desktop add dsh-market-gist-autosync   # 桌面端
+dsh plugin --profile web add dsh-market-gist-autosync       # 网页版（dsh web）
 ```
 
 安装后在 **设置 → Gist 备份** 中配置。
+
+## 多 profile 支持
+
+插件自动识别自己运行在哪个 profile（desktop / web），备份内容与恢复目标始终是**当前 profile**。识别顺序与 dshmarket 一致：
+
+1. DSH Desktop 的 `desktopProfiles` 服务（桌面端权威来源）
+2. 启动参数 `--profile <名字>`（`dsh web --profile web`）
+3. 环境变量 `DSH_PROFILE`（测试/手动覆盖用，运行时本身不设置）
+4. 兜底默认 `desktop`
+
+注意：两个 profile 的插件配置共享同一份 `$DSH_HOME/gist-autosync/config.json`（同一个 token / gistId）。**如果桌面端和网页版同时运行且都开了定时备份，两边会按各自的计时器上传到同一个 Gist**——备份内容以各自 profile 为准（envelope 里有 `profile` 字段区分来源），上传记录会交错出现。不想双份上传的话，只在一端开启定时即可。
 
 ## 备份内容
 
@@ -69,6 +81,7 @@ pnpm build   # Vite 8 (rolldown) 把 host 半打包为单文件 ESM 到 lib/
 | `itest-module-resolution.mjs` | 打包产物模块解析 |
 | `itest-strict-validation.mjs` | 严格校验拒绝非法备份 |
 | `itest-storage.mjs` | 上传记录 dsh-storage 域读写/迁移 |
+| `itest-profile-detect.mjs` | 当前 profile 识别（desktopProfiles / argv / env / 兜底） |
 | `diff-gists.mjs` | 开发工具：对比两个 Gist 备份的文件树与内容差异 |
 
 ## 安全说明

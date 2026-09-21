@@ -12,7 +12,10 @@ export declare const BACKUP_VERSION = 0.2;
 export declare const MAX_BACKUP_FILES = 256;
 export declare const PROFILE_SKIP: Set<string>;
 export declare const MAX_UPLOAD_RECORDS = 20;
-/** The active profile this backup covers (matches the desktop profile dir). */
+export declare function initProfileContext(ctx: {
+    get?: (key: string) => unknown;
+}): void;
+/** The active profile this backup covers (the profile this host booted). */
 export declare function activeProfile(): string;
 export interface UploadRecord {
     gistId: string;
