@@ -1,5 +1,9 @@
 # dsh-market-gist-autosync
 
+[![npm version](https://img.shields.io/npm/v/dsh-market-gist-autosync.svg)](https://www.npmjs.com/package/dsh-market-gist-autosync)
+[![npm downloads](https://img.shields.io/npm/dm/dsh-market-gist-autosync.svg)](https://www.npmjs.com/package/dsh-market-gist-autosync)
+[![license](https://img.shields.io/npm/l/dsh-market-gist-autosync.svg)](./LICENSE)
+
 把 DSH 配置备份到 GitHub Gist 的插件：手动 / 定时备份 + 合并恢复，备份格式与插件市场（dshmarket）**完全兼容、可互相恢复**。
 
 ## 功能
