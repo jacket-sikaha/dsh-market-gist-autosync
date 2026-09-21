@@ -129,6 +129,17 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
       });
     }, []);
 
+    // 页面可见时轮询上传记录：后台定时备份完成后，前端无需重启或手动刷新
+    // 就能看到新记录。只更新 uploads 字段，不打断用户正在编辑的其他输入。
+    React.useEffect(function () {
+      var timer = setInterval(function () {
+        rpc("listUploads").then(function (u) {
+          if (u && Array.isArray(u.uploads)) setState({ uploads: u.uploads });
+        }).catch(function () { /* 轮询出错静默忽略，下次再试 */ });
+      }, 5000);
+      return function () { clearInterval(timer); };
+    }, []);
+
     function showMessage(r) {
       // 浮动 toast：成功 3.5s、失败 6s 后自动消失，也可手动点 ✕ 关闭
       if (msgTimer.current) { clearTimeout(msgTimer.current); msgTimer.current = null; }
