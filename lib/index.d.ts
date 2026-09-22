@@ -13,7 +13,7 @@
  * 本文件只做 Cordis 接线：inject、Config schema、apply（定时调度 + RPC 路由）。
  */
 import z from '@deepseek-ai/schemastery';
-export { mergeManifests, restoreBackup } from './restore.js';
+export { mergeManifests, restoreBackup, unportableDeps } from './restore.js';
 export { validateBackupStrict, collectProfileBackup, serializeBackup } from './backup.js';
 export { installRestoredDeps } from './install.js';
 export { openUploadStore, migrateLegacyUploads, uploadDomainSpec } from './storage.js';
