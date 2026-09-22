@@ -1,6 +1,6 @@
 {
   "name": "dsh-market-gist-autosync",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH plugin: back up your DSH configuration to GitHub Gist on a schedule. · 把 DSH 配置定时备份到 GitHub Gist。",
   "type": "module",
   "main": "lib/index.js",
