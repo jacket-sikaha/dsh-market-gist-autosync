@@ -17,8 +17,8 @@ import { resolve, dirname, sep } from 'node:path'
 import type { FileEntry, ParsedBackup } from './backup.js'
 
 export function entryContent(file: FileEntry): string {
-  if (file.json !== undefined) return JSON.stringify(file.json, null, 2) + '\n'
-  return (file.lines ?? []).join('\n')
+  if (file.json !== undefined) return JSON.stringify(file.json, null, 2) + "\n"
+  return (file.lines ?? []).join("\n")
 }
 
 /** Merge backup manifest into current: union bundles, overlay deps (current kept, backup wins conflicts). */
@@ -40,6 +40,40 @@ export function mergeManifests(backupJson: Record<string, unknown>, current: Rec
   const curProfile = asObj(curDsh.profile)
   merged.dsh = { ...asObj(backupJson.dsh), ...curDsh, profile: { ...asObj(asObj(backupJson.dsh).profile), ...curProfile, bundles: [...bundleSet] } }
   return merged
+}
+
+/**
+ * Dependencies whose spec points at an absolute local path (link:C:/Users/...
+ * or file:/home/...) — aligned with dshmarket's unportableDeps (#205).
+ *
+ * Valid on the machine that wrote them, meaningless anywhere else: the path
+ * does not exist on the target, so pnpm install cannot satisfy it and the
+ * whole restore can fail on it. Reported, NOT rewritten: deciding where
+ * those files should live is a design question the operator must answer,
+ * not the restore. Relative file:./vendor/x specs are left alone because they
+ * resolve against the profile directory, which the restore recreates.
+ */
+export interface UnportableDep {
+  name: string
+  spec: string
+}
+
+export function unportableDeps(dependencies: unknown): UnportableDep[] {
+  if (dependencies === null || typeof dependencies !== 'object' || Array.isArray(dependencies)) return []
+  const found: UnportableDep[] = []
+  for (const [name, raw] of Object.entries(dependencies as Record<string, unknown>)) {
+    if (typeof raw !== 'string') continue
+    const match = /^(?:link|file):(.+)$/i.exec(raw)
+    if (match === null) continue
+    let p = match[1]
+    try { p = decodeURIComponent(p) } catch { /* keep the literal spec */ }
+    // POSIX absolute, Windows drive-letter, or UNC — every shape that names
+    // a location outside this profile.
+    if (/^\//.test(p) || /^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p)) {
+      found.push({ name, spec: raw })
+    }
+  }
+  return found
 }
 
 export interface RestoreResult {

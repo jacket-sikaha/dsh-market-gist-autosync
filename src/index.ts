@@ -30,7 +30,7 @@ import { sendJson, sameOrigin, readJsonBody } from './rpc.js'
 import { openUploadStore, migrateLegacyUploads, type UploadStore } from './storage.js'
 import type { InstallProgress } from './install.js'
 // Re-export test surface so existing scripts keep working.
-export { mergeManifests, restoreBackup } from './restore.js'
+export { mergeManifests, restoreBackup, unportableDeps } from './restore.js'
 export { validateBackupStrict, collectProfileBackup, serializeBackup } from './backup.js'
 export { installRestoredDeps } from './install.js'
 export { openUploadStore, migrateLegacyUploads, uploadDomainSpec } from './storage.js'

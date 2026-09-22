@@ -20,7 +20,7 @@ import {
 } from './config.js'
 import { createGist, updateGist, verifyToken, readGistBackupContent, gistHttp, classify } from './gist.js'
 import { collectProfileBackup, serializeBackup, buildBackupEnvelope, validateBackupStrict, type ParsedBackup } from './backup.js'
-import { restoreBackup } from './restore.js'
+import { restoreBackup, unportableDeps, type UnportableDep } from './restore.js'
 import { installRestoredDeps, type InstallProgress } from './install.js'
 
 export type ProgressFn = (p: InstallProgress) => void
@@ -126,6 +126,14 @@ export async function doRestore(
   const result = restoreBackup(profileRoot(), parsed)
   if (!result.ok) return err('restore_failed', result.error || '恢复失败')
 
+  // Detect link:/file: dependencies pointing at absolute paths on another
+  // machine (aligned with dshmarket unportableDeps #205): pnpm install cannot
+  // satisfy them here, and leaving them silently in the manifest makes the
+  // post-restore boot search for a module that will never resolve. Report
+  // them so the operator can act before the install runs.
+  const pkgEntry = parsed.files.find((f) => f.path === 'package.json' && f.json !== undefined)
+  const warnings = pkgEntry ? unportableDeps((pkgEntry.json as { dependencies?: unknown })?.dependencies) : []
+
   // Install the deps the merged manifest now references, so the next boot can
   // resolve every bundle (otherwise -> recovery mode). Report live progress.
   const install = await installRestoredDeps(profileRoot(), onProgress)
@@ -140,6 +148,9 @@ export async function doRestore(
     return err('restore_failed', `依赖全部安装失败，已回滚恢复。${install.summary}`)
   }
 
+  const warnNote = warnings.length > 0
+    ? `；注意：${warnings.length} 个依赖指向本机不存在的本地路径，${warnings.map((w) => `${w.name}（${w.spec}）`).join('、')}——这些插件不会自动安装，需在插件市场手动重装或移除`
+    : ''
   return {
     ok: true,
     restored: result.restored,
@@ -147,6 +158,7 @@ export async function doRestore(
     installOk: install.installed,
     installedNames: install.installedNames,
     prunedNames: install.prunedNames,
-    message: `已恢复 ${result.restored} 个文件到 profile「${activeProfile()}」${result.mergedManifest ? '（package.json 已合并，未覆盖现有插件）' : ''}。${install.summary}。重启 DSH 后生效。`,
+    unportableDepsWarnings: warnings,
+    message: `已恢复 ${result.restored} 个文件到 profile「${activeProfile()}」${result.mergedManifest ? '（package.json 已合并，未覆盖现有插件）' : ''}。${install.summary}${warnNote}。重启 DSH 后生效。`,
   }
 }
