@@ -11,15 +11,22 @@
  * Falls back to the legacy config.json `uploads` array when the storageDomain
  * service is unavailable (a host without dsh-base's storage layer).
  */
-import z from '@deepseek-ai/schemastery'
+import { z } from 'zod'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import { MAX_UPLOAD_RECORDS, readBackupConfig, writeBackupConfig, type GistBackupConfig, type UploadRecord } from './config.js'
 
+// NOTE: the domain table schema MUST be zod, not schemastery. The storage
+// domain calls `valueSchema.parse(raw)` on open (to re-validate persisted
+// records), and schemastery schemas are callable functions with no `.parse`
+// — passing one makes every non-empty table fail to reopen ("does not match
+// its schema") and the plugin silently falls back to config.json. schemastery
+// remains correct for the cordis Config schema in index.ts, which is validated
+// by the scope via a direct call, never `.parse`.
 const uploadRecordSchema = z.object({
   gistId: z.string(),
   deviceName: z.string(),
   uploadedAt: z.string(),
-  status: z.union([z.const('new'), z.const('update')]),
+  status: z.union([z.literal('new'), z.literal('update')]),
   bytes: z.number(),
 })
 
@@ -51,18 +58,20 @@ export async function openUploadStore(ctx: any): Promise<UploadStore | null> {
     async put(record) {
       // Key by timestamp; ISO strings sort chronologically for trimming.
       await table.put(record.uploadedAt, record)
-      // Trim to the newest MAX_UPLOAD_RECORDS.
-      const keys = (table.keys() as string[]).sort()
+      // Trim to the newest MAX_UPLOAD_RECORDS. NOTE: keys()/entries() return
+      // ITERATORS (the domain re-exposes a snapshot iterator), not arrays —
+      // spread before calling .sort()/.map().
+      const keys = [...table.keys()].sort()
       const excess = keys.length - MAX_UPLOAD_RECORDS
       for (let i = 0; i < excess; i++) await table.delete(keys[i])
     },
     list() {
-      return (table.entries() as [string, UploadRecord][])
+      return [...table.entries()]
         .map(([, v]) => v)
         .sort((a, b) => (a.uploadedAt < b.uploadedAt ? 1 : -1))
     },
     async clear() {
-      for (const key of table.keys() as string[]) await table.delete(key)
+      for (const key of table.keys()) await table.delete(key)
     },
     async close() {
       await domain.close()

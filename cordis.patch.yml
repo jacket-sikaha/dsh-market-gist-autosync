@@ -3,5 +3,4 @@
     - id: dsh-market-gist-autosync
       name: 'dsh-market-gist-autosync'
       config:
-        scheduleIntervalHours: 24
         gistApiHost: api.github.com

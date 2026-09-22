@@ -90,6 +90,17 @@ async function apply(ctx: any, rawConfig: any) {
   const openStoreWhenReady = async (): Promise<UploadStore | null> => {
     const deadline = Date.now() + STORAGE_OPEN_TIMEOUT_MS
     for (;;) {
+      // The service is provided asynchronously; retry silently until it shows.
+      if (ctx.get('storageDomain') === undefined) {
+        if (Date.now() >= deadline) {
+          console.error('[gist-autosync] storage domain service never appeared, falling back to config.json')
+          return null
+        }
+        await new Promise((resolve) => setTimeout(resolve, STORAGE_OPEN_RETRY_MS))
+        continue
+      }
+      // Service is present: an open failure is deterministic (schema/backend),
+      // not a provisioning race — fail once, don't spam retries.
       try {
         const store = await openUploadStore(ctx)
         if (store) {
@@ -97,14 +108,11 @@ async function apply(ctx: any, rawConfig: any) {
           if (moved > 0) ctx.logger?.info?.('migrated legacy upload record(s) into the storage domain')
           return store
         }
+        return null
       } catch (e) {
-        console.error('[gist-autosync] storage domain open failed: ' + (e instanceof Error ? e.message : String(e)))
-      }
-      if (Date.now() >= deadline) {
-        console.error('[gist-autosync] storage domain unavailable after retries, falling back to config.json')
+        console.error('[gist-autosync] storage domain open failed, falling back to config.json: ' + (e instanceof Error ? e.message : String(e)))
         return null
       }
-      await new Promise((resolve) => setTimeout(resolve, STORAGE_OPEN_RETRY_MS))
     }
   }
   const storePromise: Promise<UploadStore | null> = openStoreWhenReady()

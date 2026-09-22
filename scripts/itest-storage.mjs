@@ -17,30 +17,48 @@ const lib = await import(pathToFileURL(join(here, '..', 'lib', 'index.js')).href
 const { openUploadStore, migrateLegacyUploads, uploadDomainSpec } = lib
 
 // --- in-memory mock of the storageDomain facility --------------------------
+// FIDELITY NOTE: mirrors the REAL @deepseek-ai/dsh-storage-domain in the two
+// ways that actually bit this plugin:
+//  1. keys()/entries() return ITERATORS (not arrays) — callers must spread
+//     before .sort()/.map().
+//  2. open() re-validates every persisted record through each table's
+//     valueSchema via .parse() — so a non-zod schema (schemastery has no
+//     .parse) fails the reopen exactly like the real domain.
 function mockTable() {
   const map = new Map()
   return {
     async put(k, v) { map.set(k, v) },
     get(k) { return map.get(k) },
-    keys() { return [...map.keys()] },
-    entries() { return [...map.entries()] },
-    async delete(k) { map.delete(k) },
+    get size() { return map.size },
+    keys() { return [...map.keys()][Symbol.iterator]() },
+    entries() { return [...map.entries()][Symbol.iterator]() },
+    async delete(k) { map.delete(k); return true },
   }
 }
-const tables = new Map()
-const facility = {
-  async open(spec) {
-    if (!tables.has(spec.name)) tables.set(spec.name, new Map())
-    const byTable = tables.get(spec.name)
-    return {
-      table(name) {
-        if (!byTable.has(name)) byTable.set(name, mockTable())
-        return byTable.get(name)
-      },
-      async close() {},
-    }
-  },
+function makeFacility() {
+  const domains = new Map() // domain name -> table name -> mockTable
+  return {
+    async open(spec) {
+      let byTable = domains.get(spec.name)
+      if (!byTable) { byTable = new Map(); domains.set(spec.name, byTable) }
+      const handles = {
+        table(name) {
+          if (!byTable.has(name)) byTable.set(name, mockTable())
+          return byTable.get(name)
+        },
+        async close() {},
+      }
+      // Re-validate persisted records on open, mirroring the real domain.
+      for (const [tableName, tableSpec] of Object.entries(spec.tables)) {
+        for (const [key, value] of handles.table(tableName).entries()) {
+          tableSpec.valueSchema.parse(value)
+        }
+      }
+      return handles
+    },
+  }
 }
+const facility = makeFacility()
 const ctx = { get: (k) => (k === 'storageDomain' ? facility : undefined), logger: { info() {} } }
 
 let pass = 0, fail = 0
@@ -69,20 +87,17 @@ for (let i = 0; i < 25; i++) {
 }
 check('trims to 20 records', store.list().length === 20)
 
+// 4b) reopen the SAME domain (simulates a second boot) — persisted records
+// must survive the schema re-validation. Regression guard for the
+// schemastery-vs-zod bug: a schemastery schema has no `.parse`, so the real
+// domain (and this faithful mock) throws here.
+const reopened = await openUploadStore(ctx)
+check('reopen re-validates persisted records (zod schema)', reopened !== null)
+check('reopened store lists persisted records', reopened.list().length === 20)
+
 // 5) migration from legacy config.json — fresh store so the 20-cap trim from
 // step 4 does not immediately evict the older migrated records.
-const facility2 = {
-  async open(spec) {
-    const byTable = new Map()
-    return {
-      table(name) {
-        if (!byTable.has(name)) byTable.set(name, mockTable())
-        return byTable.get(name)
-      },
-      async close() {},
-    }
-  },
-}
+const facility2 = makeFacility()
 const ctx2 = { get: (k) => (k === 'storageDomain' ? facility2 : undefined), logger: { info() {} } }
 const store2 = await openUploadStore(ctx2)
 writeFileSync(join(home, 'gist-autosync', 'config.json'), JSON.stringify({

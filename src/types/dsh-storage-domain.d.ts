@@ -9,7 +9,7 @@ declare module '@deepseek-ai/dsh-storage-domain' {
     valueSchema: unknown
   }
 
-  /** Declare one table with a zod/schemastery record schema. */
+  /** Declare one table with a zod record schema (the domain calls `.parse`). */
   export function domainTable(schema: unknown): DomainTableDecl
 
   export interface DomainSpec {
