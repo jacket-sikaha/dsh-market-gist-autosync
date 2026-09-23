@@ -6,7 +6,7 @@
 
 把 DSH 配置备份到 GitHub Gist 的插件：手动 / 定时备份 + 合并恢复，备份格式与插件市场（dshmarket）**完全兼容、可互相恢复**。
 
-![设置页：Gist 备份配置、定时备份与上传记录](https://raw.githubusercontent.com/jacket-sikaha/dsh-market-gist-autosync/main/src/images/show.png)
+![Gist 备份界面截图：定时备份、合并恢复与上传记录](https://raw.githubusercontent.com/jacket-sikaha/dsh-market-gist-autosync/main/src/images/show.png)
 
 ## 功能
 
