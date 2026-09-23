@@ -2,15 +2,46 @@
 // validatedBackup() and be restorable by restoreProfileBackup().
 // This is the core of "完全兼容 dshmarket 的恢复功能".
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { tmpdir, homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const lib = await import(pathToFileURL(join(here, '..', 'lib', 'index.js')).href)
 
-// dshmarket's own validators, imported from the installed package.
-const dshmarketBackup = await import(pathToFileURL('C:/Users/Administrator/.dsh/profiles/desktop/node_modules/dshmarket/lib/backup.js').href)
+// dshmarket's own validators, imported from wherever it is actually installed.
+// The path used to be hardcoded to one developer's machine, which made this test
+// fail with ERR_MODULE_NOT_FOUND everywhere else — a broken test, not a real
+// incompatibility. Probe the usual anchors instead and skip loudly if absent.
+function findDshmarket() {
+  const candidates = []
+  if (process.env.DSH_MARKET_PATH) candidates.push(process.env.DSH_MARKET_PATH)
+  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  for (const profile of ['desktop', 'web']) {
+    candidates.push(join(home, 'profiles', profile, 'node_modules', 'dshmarket'))
+  }
+  // The DSH installation itself ships dshmarket in some Desktop builds.
+  const resourcesPath = process.resourcesPath
+  if (typeof resourcesPath === 'string' && resourcesPath !== '') {
+    for (const appRoot of ['app.asar.unpacked', 'app.asar', 'app']) {
+      candidates.push(join(resourcesPath, appRoot, 'node_modules', 'dshmarket'))
+    }
+  }
+  for (const dir of candidates) {
+    const entry = join(dir, 'lib', 'backup.js')
+    if (existsSync(entry)) return entry
+  }
+  return null
+}
+const dshmarketEntry = findDshmarket()
+if (dshmarketEntry === null) {
+  console.log('SKIP — dshmarket is not installed on this machine; cannot verify')
+  console.log('       cross-plugin compatibility. Install it (or set DSH_MARKET_PATH)')
+  console.log('       to run this test.')
+  process.exit(0)
+}
+console.log('using dshmarket at:', dshmarketEntry)
+const dshmarketBackup = await import(pathToFileURL(dshmarketEntry).href)
 
 // --- build a temp profile that looks like a real desktop profile ----------
 const home = mkdtempSync(join(tmpdir(), 'gist-compat-home-'))

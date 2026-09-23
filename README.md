@@ -3,6 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/dsh-market-gist-autosync.svg)](https://www.npmjs.com/package/dsh-market-gist-autosync)
 [![npm downloads](https://img.shields.io/npm/dm/dsh-market-gist-autosync.svg)](https://www.npmjs.com/package/dsh-market-gist-autosync)
 [![license](https://img.shields.io/npm/l/dsh-market-gist-autosync.svg)](./LICENSE)
+[![changelog](https://img.shields.io/badge/changelog-CHANGELOG.md-blue)](./CHANGELOG.md)
 
 把 DSH 配置备份到 GitHub Gist 的插件：手动 / 定时备份 + 合并恢复，备份格式与插件市场（dshmarket）**完全兼容、可互相恢复**。
 
@@ -13,6 +14,7 @@
 - **备份**：把当前 profile 的配置打包为私有 Gist（自动识别 desktop / web，见下文「多 profile 支持」）
 - **定时备份**：分钟 / 小时粒度，自持调度，随配置保存即时生效
 - **恢复**：合并语义 —— `package.json` 与现有插件合并（**不删除已装插件**），其他配置文件覆盖；恢复后自动 `pnpm install` 缺失依赖并显示实时进度；依赖全部安装失败时自动回滚文件写入
+- **启动预检**：恢复结束前按 dsh 启动加载器的真实解析顺序检查每个 bundle 能否解析，把本机装不上的（典型情况：`link:` 依赖来自另一台机器）从 profile 移除并明确报告 —— **避免恢复后重启直接进恢复模式**
 - **上传记录**：最近 20 条，存 dsh-storage 域（不可用时回退 `config.json`），支持一键清空
 - **设置页 UI**：Token 独立保存按钮、测试连接、立即备份、恢复进度实时显示、右上角浮动 toast 提示
 - **明确的中文失败原因**：未配置 token / token 无效 / gist id 无效 / 备份超 1MB 等
@@ -46,6 +48,18 @@ dsh plugin --profile web add dsh-market-gist-autosync       # 网页版（dsh we
 - 打包为 `dsh-profile-backup.json`（`format: "dsh-profile-backup"`, `version: 0.2`），上传前做与 dshmarket 对齐的严格结构校验
 - 上限：256 个文件 / 1MB（GitHub Gist 限制）
 
+## 启动预检
+
+恢复流程的最后一步，也是「恢复后能正常重启」的保证。
+
+dsh 启动加载器按 `dsh.profile.bundles` 的顺序加载插件，**遇到第一个无法解析的包名就整个 profile 启动失败**。此时错误发生在下一次重启、且信息里没有任何线索指向导致它的那次恢复。因此恢复完成前会逐个检查 bundle 的可解析性：
+
+1. **先查 DSH 安装侧** —— `@deepseek-ai/dsh-base` / `dsh-web-app` / `dsh-headless` 这类 in-box bundle 由 DSH 安装本身提供，profile 的 `node_modules` 里没有它们是**正常的**，绝不判为缺失
+2. **再按 Node 的模块查找路径**从 profile 目录向上查找 —— 覆盖社区插件与 pnpm 的 workspace 提升（`profiles/node_modules`）
+3. 仍无法解析的 bundle 从 `package.json` 移除，并在界面报告名称
+
+判定严格区分两种情况：**「确实不存在」**判为致命并移除；**「探测失败」**（锚点不可读）按**未知**处理，绝不参与移除 —— 把「我看不到」当成「它不存在」会误判所有 bundle 缺失并全部删除。
+
 ## 配置
 
 配置持久化在 `$DSH_HOME/gist-autosync/config.json`；上传记录存 dsh-storage 域，不写入配置文件。
@@ -67,8 +81,12 @@ dsh plugin --profile web add dsh-market-gist-autosync       # 网页版（dsh we
 1. 下载并严格校验备份结构（格式、路径安全、无重复路径）
 2. 原子写回：先写临时文件再替换，任一文件失败则回滚全部
 3. 合并 `package.json` 依赖（保留已装插件）
-4. 自动 `pnpm install` 缺失依赖（实时进度）；全部失败则回滚恢复
-5. 重启 DSH 后生效
+4. 剔除指向本机不存在路径的 `link:` / `file:` 本地依赖（无法安装，留着会连累引用它的 bundle）
+5. 自动 `pnpm install` 缺失依赖（实时进度）；全部失败则回滚恢复
+6. **启动预检**：仍无法解析的 bundle 从 profile 移除并在界面报告
+7. 重启 DSH 后生效
+
+> 为什么需要第 4、6 步：dsh 启动加载器读取 `dsh.profile.bundles` 时，**遇到第一个无法解析的包名就会整个 profile 启动失败**，而且要到**下一次重启**才暴露 —— 错误信息与导致它的恢复操作毫无关联，用户只能进恢复模式自救。备份来自另一台机器时（`link:` 依赖指向对方磁盘路径）这种情况很常见，所以恢复流程必须主动清理，而不是「恢复成功、重启崩溃」。
 
 ## 开发
 
@@ -88,6 +106,7 @@ pnpm build   # Vite 8 (rolldown) 把 host 半打包为单文件 ESM 到 lib/
 | `itest-strict-validation.mjs` | 严格校验拒绝非法备份 |
 | `itest-storage.mjs` | 上传记录 dsh-storage 域读写/迁移 |
 | `itest-profile-detect.mjs` | 当前 profile 识别（desktopProfiles / argv / env / 兜底） |
+| `itest-boot-check.mjs` | 启动预检：无法解析的 bundle 被捕获并移除；「未知」不被当成「缺失」 |
 | `diff-gists.mjs` | 开发工具：对比两个 Gist 备份的文件树与内容差异 |
 
 ## 安全说明
