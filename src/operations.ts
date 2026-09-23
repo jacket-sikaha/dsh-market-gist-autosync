@@ -22,6 +22,7 @@ import { createGist, updateGist, verifyToken, readGistBackupContent, gistHttp, c
 import { collectProfileBackup, serializeBackup, buildBackupEnvelope, validateBackupStrict, type ParsedBackup } from './backup.js'
 import { restoreBackup, unportableDeps, type UnportableDep } from './restore.js'
 import { installRestoredDeps, type InstallProgress } from './install.js'
+import { orphanBundles, removeBundles, findDshInstallDir } from './analyze.js'
 
 export type ProgressFn = (p: InstallProgress) => void
 
@@ -148,8 +149,21 @@ export async function doRestore(
     return err('restore_failed', `依赖全部安装失败，已回滚恢复。${install.summary}`)
   }
 
+  // Boot pre-check (#339, aligned with dshmarket's restoredBootErrors /
+  // orphanBundles). The loader reads dsh.profile.bundles and dies on the FIRST
+  // name it cannot resolve — the whole profile, not just that plugin — and it
+  // does so at the NEXT restart, with nothing tying that failure back to the
+  // restore that caused it. The offending plugin is unloadable either way, so
+  // drop the row and report it: that is what lets the rest of the profile boot
+  // instead of landing the user in recovery mode.
+  const orphans = orphanBundles(profileRoot(), findDshInstallDir())
+  const droppedBundles = removeBundles(profileRoot(), orphans)
+
   const warnNote = warnings.length > 0
     ? `；注意：${warnings.length} 个依赖指向本机不存在的本地路径，${warnings.map((w) => `${w.name}（${w.spec}）`).join('、')}——这些插件不会自动安装，需在插件市场手动重装或移除`
+    : ''
+  const bootNote = droppedBundles.length > 0
+    ? `；启动预检发现 ${droppedBundles.length} 个无法解析的 bundle，已从 profile 移除（保留的话下次重启会直接进恢复模式）：${droppedBundles.join('、')}`
     : ''
   return {
     ok: true,
@@ -159,6 +173,7 @@ export async function doRestore(
     installedNames: install.installedNames,
     prunedNames: install.prunedNames,
     unportableDepsWarnings: warnings,
-    message: `已恢复 ${result.restored} 个文件到 profile「${activeProfile()}」${result.mergedManifest ? '（package.json 已合并，未覆盖现有插件）' : ''}。${install.summary}${warnNote}。重启 DSH 后生效。`,
+    bootErrors: droppedBundles,
+    message: `已恢复 ${result.restored} 个文件到 profile「${activeProfile()}」${result.mergedManifest ? '（package.json 已合并，未覆盖现有插件）' : ''}。${install.summary}${warnNote}${bootNote}。重启 DSH 后生效。`,
   }
 }

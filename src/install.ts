@@ -7,10 +7,13 @@
  *   plugins that are already present. Reported as installed:false instead.
  * - pnpm runs but a specific package fails to install (404 / network): only
  *   those packages are pruned, so the profile still boots without them.
+ * - A link:/file: dep names a path that does not exist here (a backup from
+ *   another machine, #205): pruned up front, because nothing can ever satisfy
+ *   it and any bundle naming it would then be unresolvable at boot.
  */
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 
 export interface PnpmResult {
   exitCode: number
@@ -84,16 +87,45 @@ export async function installRestoredDeps(
   const deps = Object.entries(manifest.dependencies ?? {})
   if (deps.length === 0) return { ok: true, installed: true, summary: '无依赖需要安装', installedNames: [], prunedNames: [] }
 
+  // Machine-local specs (link:/file:) cannot be fetched, so the question is
+  // whether the path they name still exists here. A backup from another
+  // machine routinely carries one that does not (#205): left in the manifest
+  // it is a dependency nothing can satisfy, and any bundle naming it then
+  // cannot resolve at boot. Drop exactly those — and the bundles that named
+  // them — so the rest of the profile still starts.
+  const deadLocal: string[] = []
+  for (const [name, spec] of deps) {
+    if (typeof spec !== 'string' || !/^(?:link|file):/i.test(spec)) continue
+    let target = spec.replace(/^(?:link|file):/i, '')
+    try { target = decodeURIComponent(target) } catch { /* keep the literal path */ }
+    const absolute = isAbsolute(target) ? target : join(root, target)
+    if (!existsSync(absolute)) deadLocal.push(name)
+  }
+  for (const name of deadLocal) pruneDependency(manifestFile, name)
+
   // Which deps are actually missing from node_modules right now? Only those
   // need installing — the ones already present boot fine either way.
-  const missing = deps.filter(([name, spec]) => {
+  const missing = Object.entries(
+    (JSON.parse(readFileSync(manifestFile, 'utf8')) as { dependencies?: Record<string, string> }).dependencies ?? {},
+  ).filter(([name, spec]) => {
     if (typeof spec !== 'string') return false
-    if (/^(?:link|file):/.test(spec)) return false // machine-local path, not installable here
+    if (/^(?:link|file):/i.test(spec)) return false // local path that DOES exist here — pnpm links it
     return !existsSync(join(root, 'node_modules', name, 'package.json'))
   }).map(([name, spec]) => [name, spec] as [string, string])
 
   onProgress?.({ phase: 'probe', missing: missing.map(([n]) => n) })
-  if (missing.length === 0) return { ok: true, installed: true, summary: '依赖均已安装', installedNames: [], prunedNames: [] }
+  if (missing.length === 0 && deadLocal.length === 0) {
+    return { ok: true, installed: true, summary: '依赖均已安装', installedNames: [], prunedNames: [] }
+  }
+  if (missing.length === 0) {
+    return {
+      ok: true,
+      installed: true,
+      summary: `已剔除 ${deadLocal.length} 个指向本机不存在路径的本地依赖：${deadLocal.join('、')}`,
+      installedNames: [],
+      prunedNames: deadLocal,
+    }
+  }
 
   // Fast path: one `pnpm install` for everything.
   onProgress?.({ phase: 'install-all' })
