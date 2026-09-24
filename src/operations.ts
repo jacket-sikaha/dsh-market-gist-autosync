@@ -18,13 +18,25 @@ import {
   type Result,
   type UploadRecord,
 } from './config.js'
-import { createGist, updateGist, verifyToken, readGistBackupContent, gistHttp, classify } from './gist.js'
-import { collectProfileBackup, serializeBackup, buildBackupEnvelope, validateBackupStrict, type ParsedBackup } from './backup.js'
-import { restoreBackup, unportableDeps, type UnportableDep } from './restore.js'
+import { createGist, updateGist, verifyToken, readGistBackupContent, gistHttp, classify, failNet } from './gist.js'
+import { collectProfileBackup, serializeBackup, buildBackupEnvelope, validateBackupStrict, unportableDeps, type ParsedBackup, type UnportableDep } from './backup.js'
+import { restoreBackup } from './restore.js'
 import { installRestoredDeps, type InstallProgress } from './install.js'
 import { orphanBundles, removeBundles, findDshInstallDir } from './analyze.js'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 export type ProgressFn = (p: InstallProgress) => void
+
+/** Dependencies of the profile's manifest as it currently stands on disk. */
+function readManifestDeps(profileDirectory: string): unknown {
+  try {
+    const manifest = JSON.parse(readFileSync(resolve(profileDirectory, 'package.json'), 'utf8'))
+    return manifest?.dependencies
+  } catch {
+    return undefined
+  }
+}
 
 export async function doTest(cfg: GistBackupConfig, host: string): Promise<Result> {
   const resolved = resolveToken(cfg)
@@ -40,7 +52,7 @@ export async function doTest(cfg: GistBackupConfig, host: string): Promise<Resul
       return err('invalid_gist', e instanceof Error ? e.message : String(e))
     }
     const get = await gistHttp(token, 'GET', `/gists/${gid}`, undefined, host)
-    if (get.netError) return err('network', get.netError)
+    if (get.netError) return failNet(get)
     if (get.status !== 200) return classify(get.status, get.body)
   }
   return { ok: true, message: `连接正常（token 来源：${resolved.source === 'env' ? '环境变量' : '已保存配置'}）` }
@@ -64,10 +76,14 @@ export async function doBackup(cfg: GistBackupConfig, host: string, gistOverride
   const token = resolved.token
   let files
   let containsSecrets = false
+  let strippedDeps: UnportableDep[] = []
+  let strippedBundles: string[] = []
   try {
     const collected = collectProfileBackup(cfg.includeLock)
     files = collected.files
     containsSecrets = collected.containsSecrets
+    strippedDeps = collected.strippedDeps
+    strippedBundles = collected.strippedBundles
   } catch (e) {
     return err('other', e instanceof Error ? e.message : String(e))
   }
@@ -93,7 +109,13 @@ export async function doBackup(cfg: GistBackupConfig, host: string, gistOverride
     bytes,
   }
   writeBackupConfig({ ...cfg, gistId: newGistId })
-  return { ok: true, gistId: newGistId, gistUrl, bytes, isNew, record, containsSecrets }
+  // Tell the user what did not travel, rather than silently dropping it: this
+  // backup is read by their other machines, and a plugin that vanishes there
+  // with no explanation looks like data loss.
+  const stripNote = strippedDeps.length > 0
+    ? `；已排除 ${strippedDeps.length} 个指向本机路径的本地依赖（换机器后路径不存在，同步过去也无法安装）：${strippedDeps.map((d) => `${d.name}（${d.spec}）`).join('、')}${strippedBundles.length > 0 ? `，并同时移除了对应的 bundle 记录：${strippedBundles.join('、')}` : ''}`
+    : ''
+  return { ok: true, gistId: newGistId, gistUrl, bytes, isNew, record, containsSecrets, strippedDeps, strippedBundles, message: stripNote === '' ? undefined : `备份完成${stripNote}` }
 }
 
 export async function doRestore(
@@ -128,15 +150,17 @@ export async function doRestore(
   if (!result.ok) return err('restore_failed', result.error || '恢复失败')
 
   // Detect link:/file: dependencies pointing at absolute paths on another
-  // machine (aligned with dshmarket unportableDeps #205): pnpm install cannot
-  // satisfy them here, and leaving them silently in the manifest makes the
-  // post-restore boot search for a module that will never resolve. Report
-  // them so the operator can act before the install runs.
-  const pkgEntry = parsed.files.find((f) => f.path === 'package.json' && f.json !== undefined)
-  const warnings = pkgEntry ? unportableDeps((pkgEntry.json as { dependencies?: unknown })?.dependencies) : []
-
-  // Install the deps the merged manifest now references, so the next boot can
-  // resolve every bundle (otherwise -> recovery mode). Report live progress.
+  // machine (aligned with dshmarket unportableDeps #205). New backups no longer
+  // carry these — the backup half strips them (stripMachineLocalDeps) — but a
+  // backup written by an older version, or by another tool, still can, so the
+  // restore half reports what it sees.
+  //
+  // Reported from the manifest as it stands AFTER the install ran, not from the
+  // incoming backup: install.ts prunes a machine-local dep whose path is gone,
+  // and reporting the pre-install list would announce the same dependency twice
+  // with contradictory advice — "pruned" in one sentence and "install it by
+  // hand" in the next. Re-read the file so the message describes the profile
+  // the user actually has.
   const install = await installRestoredDeps(profileRoot(), onProgress)
 
   // If pnpm could not run at all AND nothing was installed AND we pruned
@@ -149,6 +173,8 @@ export async function doRestore(
     return err('restore_failed', `依赖全部安装失败，已回滚恢复。${install.summary}`)
   }
 
+  const warnings = unportableDeps(readManifestDeps(profileRoot()))
+
   // Boot pre-check (#339, aligned with dshmarket's restoredBootErrors /
   // orphanBundles). The loader reads dsh.profile.bundles and dies on the FIRST
   // name it cannot resolve — the whole profile, not just that plugin — and it
@@ -159,8 +185,14 @@ export async function doRestore(
   const orphans = orphanBundles(profileRoot(), findDshInstallDir())
   const droppedBundles = removeBundles(profileRoot(), orphans)
 
+  // Wording matters here: `warnings` is the POST-install manifest, so any dep
+  // still listed is one that survived pruning — typically its local path exists
+  // on this machine too, or the spec was relative. Saying "won't auto-install,
+  // reinstall by hand" would contradict the "pruned" sentence above and send
+  // the user to fix something that is already fine. The honest statement is
+  // that these specs are machine-specific and travel badly.
   const warnNote = warnings.length > 0
-    ? `；注意：${warnings.length} 个依赖指向本机不存在的本地路径，${warnings.map((w) => `${w.name}（${w.spec}）`).join('、')}——这些插件不会自动安装，需在插件市场手动重装或移除`
+    ? `；另有 ${warnings.length} 个依赖指向本机绝对路径，${warnings.map((w) => `${w.name}（${w.spec}）`).join('、')}——本机可用，但换机器后路径不存在，建议改为可移植的来源或在本机插件市场重装`
     : ''
   const bootNote = droppedBundles.length > 0
     ? `；启动预检发现 ${droppedBundles.length} 个无法解析的 bundle，已从 profile 移除（保留的话下次重启会直接进恢复模式）：${droppedBundles.join('、')}`
