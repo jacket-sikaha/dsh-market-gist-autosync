@@ -242,15 +242,24 @@ async function apply(ctx: any, rawConfig: any) {
           // silently falling back to the last-saved gistId on disk.
           sendJson(response, 200, await runBackup(typeof body.gist === 'string' ? body.gist : undefined))
         } else if (action === 'restore') {
-          const gistInput = typeof body.gist === 'string' ? body.gist : ''
-          restoreProgress = { active: true, lines: [], done: false }
-          const result = await doRestore(readBackupConfig(), apiHost, gistInput, (p) => {
-            const line = progressToLine(p)
-            if (line) restoreProgress.lines.push(line)
-          })
-          restoreProgress.done = true
-          restoreProgress.active = false
-          sendJson(response, 200, { ...result, progressLines: restoreProgress.lines })
+          // Restore is a long operation (pull gist, write files, pnpm install).
+          // A second concurrent restore would race the first on the same profile
+          // files and pnpm runs — not just garble progress, but cause real data
+          // corruption. Reject with 409 instead of queueing: the UI polls
+          // restoreProgress and already shows the in-flight state.
+          if (restoreProgress.active) {
+            sendJson(response, 409, { ok: false, code: 'restore_in_progress', error: '已有恢复操作正在进行，请等待其完成后再试' })
+          } else {
+            const gistInput = typeof body.gist === 'string' ? body.gist : ''
+            restoreProgress = { active: true, lines: [], done: false }
+            const result = await doRestore(readBackupConfig(), apiHost, gistInput, (p) => {
+              const line = progressToLine(p)
+              if (line) restoreProgress.lines.push(line)
+            })
+            restoreProgress.done = true
+            restoreProgress.active = false
+            sendJson(response, 200, { ...result, progressLines: restoreProgress.lines })
+          }
         } else if (action === 'restoreProgress') {
           sendJson(response, 200, { ok: true, ...restoreProgress })
         } else if (action === 'listUploads') {
