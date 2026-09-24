@@ -2,10 +2,37 @@
  * Config, paths, and shared constants for the gist-autosync host plugin.
  */
 import { homedir, hostname } from 'node:os'
-import { join } from 'node:path'
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { existsSync, readFileSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 
 export const name = 'dsh-market-gist-autosync'
+
+/**
+ * Write a file atomically: stage a sibling temp file, then rename it over the
+ * target.
+ *
+ * The rename is the only step that touches the real path, so a crash, a kill,
+ * or a full disk mid-write leaves the ORIGINAL file intact rather than a
+ * truncated one. That matters most for `package.json`: it is the file the boot
+ * loader parses, and a half-written manifest is not a smaller profile — it is a
+ * profile that cannot boot at all, with the user's plugin list lost.
+ *
+ * The temp name carries pid + a counter so concurrent writers (a scheduled
+ * backup, a restore, an install) cannot stage over each other. It is removed on
+ * failure so a rejected write leaves no debris behind.
+ */
+let atomicCounter = 0
+export function writeFileAtomic(file: string, content: string | Buffer): void {
+  const temp = `${file}.gist-tmp-${process.pid}-${(atomicCounter += 1)}`
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(temp, content)
+    renameSync(temp, file)
+  } catch (e) {
+    try { rmSync(temp, { force: true }) } catch { /* nothing left to clean */ }
+    throw e
+  }
+}
 
 export const CONFIG_DIR = 'gist-autosync'
 export const CONFIG_FILE = 'config.json'

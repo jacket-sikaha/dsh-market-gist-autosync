@@ -6,18 +6,12 @@ export declare function mergeManifests(backupJson: Record<string, unknown>, curr
  * Dependencies whose spec points at an absolute local path (link:C:/Users/...
  * or file:/home/...) — aligned with dshmarket's unportableDeps (#205).
  *
- * Valid on the machine that wrote them, meaningless anywhere else: the path
- * does not exist on the target, so pnpm install cannot satisfy it and the
- * whole restore can fail on it. Reported, NOT rewritten: deciding where
- * those files should live is a design question the operator must answer,
- * not the restore. Relative file:./vendor/x specs are left alone because they
- * resolve against the profile directory, which the restore recreates.
+ * Defined in backup.ts and re-exported here, because the two halves of the
+ * cross-machine story must agree on exactly which specs count: the backup half
+ * strips them before upload, and the restore half reports any that arrived in a
+ * backup written before stripping existed (or by another tool).
  */
-export interface UnportableDep {
-    name: string;
-    spec: string;
-}
-export declare function unportableDeps(dependencies: unknown): UnportableDep[];
+export { unportableDeps, type UnportableDep } from './backup.js';
 export interface RestoreResult {
     ok: boolean;
     restored?: number;

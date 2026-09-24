@@ -1,4 +1,5 @@
 export declare const name = "dsh-market-gist-autosync";
+export declare function writeFileAtomic(file: string, content: string | Buffer): void;
 export declare const CONFIG_DIR = "gist-autosync";
 export declare const CONFIG_FILE = "config.json";
 export declare const GIST_FILENAME = "dsh-profile-backup.json";

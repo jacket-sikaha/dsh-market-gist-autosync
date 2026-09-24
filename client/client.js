@@ -145,10 +145,14 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
       if (msgTimer.current) { clearTimeout(msgTimer.current); msgTimer.current = null; }
       var m = r.ok ? { ok: true, text: r.message || r.gistUrl || "成功" } : { ok: false, text: r.error };
       setState({ message: m });
+      // 成功提示里可能带一段说明（例如备份时排除了哪些本地依赖，以及原因）。
+      // 固定 3.5s 对一段要读完的清单太短，等于没提示 —— 按长度放宽上限 15s。
+      var base = m.ok ? 3500 : 6000;
+      var scaled = Math.min(base + Math.max(0, String(m.text).length - 24) * 90, 15000);
       msgTimer.current = setTimeout(function () {
         msgTimer.current = null;
         setState({ message: null });
-      }, m.ok ? 3500 : 6000);
+      }, scaled);
     }
 
     function dismissMessage() {
@@ -206,7 +210,12 @@ window.__ModuleLoader__.load({ id: "dsh-market-gist-autosync", factory: (require
           rpc("listUploads").then(function (u) {
             setState({ busy: false, gistId: r.gistId, uploads: (u && u.uploads) || [] });
           }).catch(function () { setState({ busy: false, gistId: r.gistId }); });
-          showMessage({ ok: true, message: "备份成功 " + fmtBytes(r.bytes) + (r.isNew ? "（已新建 Gist）" : "") });
+          // The host appends a note when machine-local deps were excluded from
+          // the backup (they would be unusable on the other machines reading
+          // this gist). Surface it: a plugin silently missing on the peer's
+          // machine looks like data loss, and this toast is the only place the
+          // reason is ever shown.
+          showMessage({ ok: true, message: "备份成功 " + fmtBytes(r.bytes) + (r.isNew ? "（已新建 Gist）" : "") + (r.message || "") });
         } else {
           setState({ busy: false });
           showMessage(r);

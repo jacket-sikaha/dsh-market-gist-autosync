@@ -35,8 +35,14 @@ export declare function analyzeBundles(profileDirectory: string, dshInstallDir?:
  * - an in-box bundle this process could not locate is supplied by the dsh
  *   installation, so failing to find it is a gap in what this process sees;
  * - a bundle whose resolution probe failed (unreadable anchor) was never
- *   actually looked for.
- * Both would otherwise delete a working bundle over a limitation of the check.
+ *   actually looked for;
+ * - a bundle whose patch could not be parsed because this process lacks the
+ *   loader's YAML dialect.
+ * All would otherwise delete a working bundle over a limitation of the check.
+ *
+ * Selected by `error`, not by `directory === null`: a bundle that resolves but
+ * whose patch is missing or malformed fails the boot just as surely, and is
+ * exactly what the pre-check is for.
  */
 export declare function orphanBundles(profileDirectory: string, dshInstallDir?: string | null): string[];
 /**
