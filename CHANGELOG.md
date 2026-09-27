@@ -2,6 +2,23 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.6] - 2026-09-27
+
+### 修复
+
+- **兼容 schemastery 3.18.4 的声明生成**（构建修复）：3.18.4 把 `Schema` 从 2 个泛型参数改为 3 个（新增 `SchemaMode`），且 `Schema` 类型别名不再从模块导出（改为默认导出的同名合并），导致 `tsc --emitDeclarationOnly` 报 TS2883（推断类型不可移植）。`Config` 改为显式注解 `z<{ gistApiHost: string }>`（与官方 dsh 包 `schema: z<T>` 写法一致），声明文件不再引用不可移植类型。
+
+### 变更
+
+- **兼容 DSH 0.1.7-rc.2**：peerDependencies 追加 0.1.7-rc.2（dsh-host-webserver / dsh-settings / dsh-storage-domain），保持向后兼容旧版本（0.1.5-rc.1+）。
+- devDependencies 对齐：dsh-storage-domain 0.1.7-rc.2、schemastery ^3.18.4。
+
+## [0.1.5] - 2026-09-25
+
+### 变更
+
+- **兼容 DSH 0.1.7-rc.1**：peerDependencies 追加 0.1.7-rc.1（dsh-host-webserver / dsh-settings / dsh-storage-domain），保持向后兼容旧版本（0.1.5-rc.1+）。经源码核对 storageDomain / webServer API 在 0.1.7-rc.1 未变。
+
 ## [0.1.4] - 2026-09-24
 
 ### 修复
