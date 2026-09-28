@@ -14,5 +14,5 @@ export declare function doTest(cfg: GistBackupConfig, host: string): Promise<Res
  * back up" really creates a fresh gist. undefined = use cfg.gistId (scheduled
  * backups, which have no UI context).
  */
-export declare function doBackup(cfg: GistBackupConfig, host: string, gistOverride?: string): Promise<Result>;
+export declare function doBackup(cfg: GistBackupConfig, host: string, gistOverride?: string, source?: 'scheduled' | 'manual'): Promise<Result>;
 export declare function doRestore(cfg: GistBackupConfig, host: string, gistInput: string, onProgress?: ProgressFn): Promise<Result>;

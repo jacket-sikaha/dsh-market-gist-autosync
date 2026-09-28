@@ -64,7 +64,12 @@ export async function doTest(cfg: GistBackupConfig, host: string): Promise<Resul
  * back up" really creates a fresh gist. undefined = use cfg.gistId (scheduled
  * backups, which have no UI context).
  */
-export async function doBackup(cfg: GistBackupConfig, host: string, gistOverride?: string): Promise<Result> {
+export async function doBackup(
+  cfg: GistBackupConfig,
+  host: string,
+  gistOverride?: string,
+  source: 'scheduled' | 'manual' = 'manual',
+): Promise<Result> {
   const resolved = resolveToken(cfg)
   if (!resolved) return err('no_token', '未配置 Gist token（请在下方填写，或设置环境变量 DSH_GITHUB_TOKEN）')
   let gid: string
@@ -107,6 +112,7 @@ export async function doBackup(cfg: GistBackupConfig, host: string, gistOverride
     uploadedAt: new Date().toISOString(),
     status: isNew ? 'new' : 'update',
     bytes,
+    source,
   }
   writeBackupConfig({ ...cfg, gistId: newGistId })
   // Tell the user what did not travel, rather than silently dropping it: this

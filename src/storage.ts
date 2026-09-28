@@ -28,6 +28,8 @@ const uploadRecordSchema = z.object({
   uploadedAt: z.string(),
   status: z.union([z.literal('new'), z.literal('update')]),
   bytes: z.number(),
+  // Optional: records written before the field existed omit it.
+  source: z.union([z.literal('scheduled'), z.literal('manual')]).optional(),
 })
 
 export const uploadDomainSpec = defineDomain({

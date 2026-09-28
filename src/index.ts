@@ -12,6 +12,7 @@
  *
  * 本文件只做 Cordis 接线：inject、Config schema、apply（定时调度 + RPC 路由）。
  */
+import { createRequire } from "node:module";
 import z from "@deepseek-ai/schemastery";
 import {
   deviceName,
@@ -59,6 +60,20 @@ export {
 
 const name = "dsh-market-gist-autosync";
 
+// 插件自身版本号：直接读包根 package.json，发版只改一处（package.json）。
+// lib/index.js 由 vite 打包为单文件，运行时位于 <pluginRoot>/lib/，
+// createRequire 按文件位置解析 ../package.json，正是已安装插件的根目录。
+function pluginVersion(): string {
+  try {
+    const req = createRequire(import.meta.url);
+    const pkg = req("../package.json") as { version?: string };
+    return typeof pkg.version === "string" ? pkg.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+const VERSION = pluginVersion();
+
 const inject = ["webServer"];
 
 const Config: z<{ gistApiHost: string }> = z.object({
@@ -102,6 +117,8 @@ async function apply(ctx: any, rawConfig: any) {
   initProfileContext(ctx);
 
   let interval: ReturnType<typeof setInterval> | undefined;
+  /** ETA (epoch ms) of the next scheduled backup, null when the timer is off. */
+  let nextRunAt: number | null = null;
 
   // Upload records live in the dsh-storage domain (schema-validated, crash-safe
   // KV), not in the settings file.
@@ -195,8 +212,11 @@ async function apply(ctx: any, rawConfig: any) {
   };
 
   /** doBackup + record persistence, shared by the timer and the RPC. */
-  const runBackup = async (gistOverride?: string) => {
-    const r = await doBackup(readBackupConfig(), apiHost, gistOverride);
+  const runBackup = async (
+    gistOverride?: string,
+    source: "scheduled" | "manual" = "manual",
+  ) => {
+    const r = await doBackup(readBackupConfig(), apiHost, gistOverride, source);
     if (r.ok && r.record) {
       try {
         await recordUpload(r.record as UploadRecord);
@@ -225,9 +245,15 @@ async function apply(ctx: any, rawConfig: any) {
       clearInterval(interval);
       interval = undefined;
     }
+    nextRunAt = null;
     if (cfg.scheduleEnabled) {
+      const ms = scheduleIntervalMs(cfg);
+      // Track the ETA of the next scheduled run so the UI can show it.
+      // Updated again on every tick — the interval keeps firing.
+      nextRunAt = Date.now() + ms;
       interval = setInterval(() => {
-        runBackup()
+        nextRunAt = Date.now() + ms;
+        runBackup(undefined, "scheduled")
           .then((r) => {
             if (!r.ok)
               console.error(
@@ -239,7 +265,7 @@ async function apply(ctx: any, rawConfig: any) {
               `[gist-autosync] scheduled backup error: ${e instanceof Error ? e.message : String(e)}`,
             ),
           );
-      }, scheduleIntervalMs(cfg));
+      }, ms);
       interval.unref?.();
     }
   };
@@ -282,6 +308,8 @@ async function apply(ctx: any, rawConfig: any) {
             deviceNameDetected: deviceName(),
             activeProfile: activeProfile(),
             envTokenSet: envToken,
+            version: VERSION,
+            nextRunAt,
           });
         } else if (action === "saveConfig") {
           const incoming = (body.config as Partial<GistBackupConfig>) || {};
@@ -308,6 +336,7 @@ async function apply(ctx: any, rawConfig: any) {
             200,
             await runBackup(
               typeof body.gist === "string" ? body.gist : undefined,
+              "manual",
             ),
           );
         } else if (action === "restore") {
@@ -344,7 +373,13 @@ async function apply(ctx: any, rawConfig: any) {
         } else if (action === "restoreProgress") {
           sendJson(response, 200, { ok: true, ...restoreProgress });
         } else if (action === "listUploads") {
-          sendJson(response, 200, { ok: true, uploads: await listUploads() });
+          // nextRunAt rides along: the client already polls this endpoint,
+          // and the ETA changes on every tick / schedule save.
+          sendJson(response, 200, {
+            ok: true,
+            uploads: await listUploads(),
+            nextRunAt,
+          });
         } else if (action === "clearUploads") {
           await clearUploads();
           sendJson(response, 200, { ok: true });

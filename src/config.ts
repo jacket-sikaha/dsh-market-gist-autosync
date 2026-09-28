@@ -100,6 +100,12 @@ export interface UploadRecord {
   /** 'new' = created a fresh gist; 'update' = overwrote an existing one. */
   status: 'new' | 'update'
   bytes: number
+  /**
+   * Who triggered this backup: the schedule timer or a manual click.
+   * Optional for backward compatibility with records written before the
+   * field existed — the UI renders those as "-".
+   */
+  source?: 'scheduled' | 'manual'
   /** Legacy fields kept optional so pre-domain config.json still parses. */
   gistUrl?: string
   createdAt?: string
