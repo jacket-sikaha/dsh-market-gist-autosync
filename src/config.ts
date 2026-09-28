@@ -102,10 +102,19 @@ export interface UploadRecord {
   bytes: number
   /**
    * Who triggered this backup: the schedule timer or a manual click.
-   * Optional for backward compatibility with records written before the
-   * field existed — the UI renders those as "-".
+   *
+   * Deliberately `string`, NOT a `'scheduled' | 'manual'` union. This field is
+   * stored in the storage domain, whose put() writes verbatim and only
+   * re-validates on reopen — a literal union would make any FUTURE value (e.g.
+   * "api") unparseable by THIS version, and one unparseable row fails the whole
+   * domain's loadAll(), dropping every record from the UI. So reading stays
+   * lenient, and the UI renders unknown values as "-". Writers remain
+   * type-safe: doBackup() still accepts only 'scheduled' | 'manual'.
+   *
+   * Optional for backward compatibility with records written before the field
+   * existed — the UI renders those as "-" too.
    */
-  source?: 'scheduled' | 'manual'
+  source?: string
   /** Legacy fields kept optional so pre-domain config.json still parses. */
   gistUrl?: string
   createdAt?: string

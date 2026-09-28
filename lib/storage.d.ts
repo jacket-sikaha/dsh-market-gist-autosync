@@ -15,7 +15,10 @@ export interface UploadStore {
 export declare function openUploadStore(ctx: any): Promise<UploadStore | null>;
 /**
  * One-shot migration: move legacy config.json uploads into the domain, then
- * strip them from config.json. Idempotent — config.json without uploads is a
- * no-op.
+ * strip the MOVED rows from config.json. Rows that fail the domain's schema
+ * check are left in place (kept[] below) instead of being deleted, so a single
+ * bad row can never become data loss. Mostly idempotent — moved rows do not
+ * come back, but kept rows are retried on every boot until they are fixed or
+ * removed by hand.
  */
 export declare function migrateLegacyUploads(store: UploadStore): Promise<number>;

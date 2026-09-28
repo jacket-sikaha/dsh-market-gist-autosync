@@ -28,8 +28,11 @@ const uploadRecordSchema = z.object({
   uploadedAt: z.string(),
   status: z.union([z.literal('new'), z.literal('update')]),
   bytes: z.number(),
-  // Optional: records written before the field existed omit it.
-  source: z.union([z.literal('scheduled'), z.literal('manual')]).optional(),
+  // Deliberately z.string(), not a literal union — see UploadRecord.source.
+  // An unknown value MUST parse successfully: this table is only validated on
+  // reopen, and a single unparseable row fails the whole domain's loadAll(),
+  // dropping every record from the UI. The UI renders anything else as "-".
+  source: z.string().optional(),
 })
 
 export const uploadDomainSpec = defineDomain({
@@ -58,6 +61,20 @@ export async function openUploadStore(ctx: any): Promise<UploadStore | null> {
   const table = domain.table('uploads')
   return {
     async put(record) {
+      // Validate BEFORE writing. The domain's put() stores the value verbatim
+      // and only re-validates during loadAll() on the NEXT boot: a bad row
+      // would sit there silently, then make the whole domain fail to open —
+      // and we would fall back to config.json, which migrateLegacyUploads() has
+      // already emptied, so the UI shows zero records with no error at all.
+      // Rejecting here keeps the failure attributable to the backup that made it.
+      const parsed = uploadRecordSchema.safeParse(record)
+      if (!parsed.success) {
+        const detail = parsed.error.issues
+          .map((i) => `${i.path.length > 0 ? i.path.join('.') : 'record'}: ${i.message}`)
+          .join('; ')
+        console.error(`[gist-autosync] refusing to store upload record: ${detail}`)
+        throw new Error(`upload record failed schema validation: ${detail}`)
+      }
       // Key by timestamp; ISO strings sort chronologically for trimming.
       await table.put(record.uploadedAt, record)
       // Trim to the newest MAX_UPLOAD_RECORDS. NOTE: keys()/entries() return
@@ -83,26 +100,44 @@ export async function openUploadStore(ctx: any): Promise<UploadStore | null> {
 
 /**
  * One-shot migration: move legacy config.json uploads into the domain, then
- * strip them from config.json. Idempotent — config.json without uploads is a
- * no-op.
+ * strip the MOVED rows from config.json. Rows that fail the domain's schema
+ * check are left in place (kept[] below) instead of being deleted, so a single
+ * bad row can never become data loss. Mostly idempotent — moved rows do not
+ * come back, but kept rows are retried on every boot until they are fixed or
+ * removed by hand.
  */
 export async function migrateLegacyUploads(store: UploadStore): Promise<number> {
   const cfg = readBackupConfig()
   const legacy = Array.isArray(cfg.uploads) ? cfg.uploads : []
   if (legacy.length === 0) return 0
   let moved = 0
+  // Rows that fail validation must be KEPT in config.json: they are real history
+  // (possibly hand-edited), and listUploads() still reads them from the legacy
+  // store. Clearing them along with the migrated ones would turn a schema
+  // failure into data loss.
+  const kept: UploadRecord[] = []
   for (const u of legacy) {
     if (!u || typeof u.gistId !== 'string') continue
-    await store.put({
-      gistId: u.gistId,
-      deviceName: u.deviceName || '',
-      uploadedAt: u.uploadedAt || u.updatedAt || u.createdAt || new Date().toISOString(),
-      status: u.status === 'new' ? 'new' : 'update',
-      bytes: typeof u.bytes === 'number' ? u.bytes : 0,
-    })
-    moved++
+    try {
+      await store.put({
+        gistId: u.gistId,
+        deviceName: u.deviceName || '',
+        uploadedAt: u.uploadedAt || u.updatedAt || u.createdAt || new Date().toISOString(),
+        status: u.status === 'new' ? 'new' : 'update',
+        bytes: typeof u.bytes === 'number' ? u.bytes : 0,
+        // Preserve source: the legacy path has no schema gate, so dropping it
+        // here would be an invisible downgrade of an otherwise valid record.
+        source: u.source,
+      })
+      moved++
+    } catch (e) {
+      kept.push(u)
+      console.error(
+        `[gist-autosync] could not migrate legacy upload ${u.gistId}: ` +
+          (e instanceof Error ? e.message : String(e)),
+      )
+    }
   }
-  const next: GistBackupConfig = { ...cfg, uploads: [] }
-  writeBackupConfig(next)
+  writeBackupConfig({ ...cfg, uploads: kept })
   return moved
 }
