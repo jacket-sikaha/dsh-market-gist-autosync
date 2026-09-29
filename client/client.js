@@ -736,6 +736,24 @@ window.__ModuleLoader__.load({
             setState({ scheduleEnabled: v });
           },
         }),
+        s.scheduleEnabled
+          ? React.createElement(
+              "div",
+              {
+                style: {
+                  fontSize: 11,
+                  color: "#b45309",
+                  background: "#fef3c7",
+                  border: "1px solid #fcd34d",
+                  borderRadius: 6,
+                  padding: "6px 10px",
+                  margin: "0 0 10px",
+                  lineHeight: 1.6,
+                },
+              },
+              "⚠ 定时备份仅在 DSH 运行期间执行。DSH 关闭、退出或电脑休眠时不会备份，也不会补跑错过的周期。",
+            )
+          : null,
         React.createElement(
           "div",
           {
@@ -791,19 +809,28 @@ window.__ModuleLoader__.load({
             "执行一次",
           ),
         ),
-        // 上次备份 + 下次预计：nextRunAt 由 host 随轮询刷新
-        React.createElement(
-          "div",
-          { style: { fontSize: 11, color: "#8b93a1", margin: "0 0 10px" } },
-          s.uploads && s.uploads.length > 0
-            ? "上次备份：" + fmtAgo(s.uploads[0].uploadedAt)
-            : "尚未备份",
-          s.scheduleEnabled
-            ? s.nextRunAt
-              ? " · 下次预计：" + fmtTime(new Date(s.nextRunAt).toISOString())
-              : ""
-            : " · 定时备份未开启",
-        ),
+        // 上次备份 + 下次预计：nextRunAt 由 host 随轮询刷新。
+        // “上次备份”指最近一次成功备份——失败的尝试不算，否则一个失败的
+        // 定时会让 UI 显示“上次备份：刚刚”，掩盖备份链实际已断。
+        (function () {
+          var lastOk =
+            s.uploads && s.uploads.find(function (u) { return u.status !== "failed"; });
+          var lastText = lastOk
+            ? "上次备份：" + fmtAgo(lastOk.uploadedAt)
+            : s.uploads && s.uploads.length > 0
+              ? "上次成功备份：无"
+              : "尚未备份";
+          return React.createElement(
+            "div",
+            { style: { fontSize: 11, color: "#8b93a1", margin: "0 0 10px" } },
+            lastText,
+            s.scheduleEnabled
+              ? s.nextRunAt
+                ? " · 下次预计：" + fmtTime(new Date(s.nextRunAt).toISOString())
+                : ""
+              : " · 定时备份未开启",
+          );
+        })(),
         React.createElement(
           "div",
           { style: { marginTop: 4 } },
@@ -970,6 +997,7 @@ window.__ModuleLoader__.load({
                   ),
                 ),
                 s.uploads.map(function (u, idx) {
+                  var isFailed = u.status === "failed";
                   var isNew = u.status === "new";
                   var badgeStyle = {
                     display: "inline-block",
@@ -977,9 +1005,18 @@ window.__ModuleLoader__.load({
                     borderRadius: 10,
                     fontSize: 11,
                     lineHeight: "16px",
-                    background: isNew ? "#e8f0fe" : "#f0f1f3",
-                    color: isNew ? "#1a56db" : "#4b5563",
+                    background: isFailed
+                      ? "#fef2f2"
+                      : isNew
+                        ? "#e8f0fe"
+                        : "#f0f1f3",
+                    color: isFailed
+                      ? "#b91c1c"
+                      : isNew
+                        ? "#1a56db"
+                        : "#4b5563",
                   };
+                  var badgeText = isFailed ? "失败" : isNew ? "新建" : "更新";
                   // 执行方式：定时器触发 or 手动点击；旧记录无 source 字段 → "-"
                   var srcLabel =
                     u.source === "scheduled"
@@ -1060,13 +1097,13 @@ window.__ModuleLoader__.load({
                     ),
                     React.createElement(
                       "span",
-                      { style: badgeStyle },
-                      isNew ? "新建" : "更新",
+                      { style: badgeStyle, title: isFailed ? u.error || "" : "" },
+                      badgeText,
                     ),
                     React.createElement(
                       "span",
                       { style: { color: "#8b93a1", textAlign: "right" } },
-                      fmtBytes(u.bytes),
+                      isFailed ? "-" : fmtBytes(u.bytes),
                     ),
                   );
                 }),

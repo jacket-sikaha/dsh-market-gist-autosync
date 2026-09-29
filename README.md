@@ -12,10 +12,11 @@
 ## 功能
 
 - **备份**：把当前 profile 的配置打包为私有 Gist（自动识别 desktop / web，见下文「多 profile 支持」）
-- **定时备份**：分钟 / 小时粒度，自持调度，随配置保存即时生效
+- **定时备份**：分钟 / 小时粒度，自持调度，随配置保存即时生效。**仅 DSH 运行期间执行**——DSH 关闭、退出或电脑休眠时不备份，也不补跑错过的周期（进程内 `setInterval`，非系统级 cron）。失败会写一条 `failed` 记录进上传历史（红色徽章），不再静默丢失
+- **备份互斥**：同一进程内定时 tick 与手动备份不会并发——撞上时定时跳过本次、手动 toast 提示，消除并发建双 gist / 孤儿 / config 竞态
 - **恢复**：合并语义 —— `package.json` 与现有插件合并（**不删除已装插件**），其他配置文件覆盖；恢复后自动 `pnpm install` 缺失依赖并显示实时进度；依赖全部安装失败时自动回滚文件写入
 - **启动预检**：恢复结束前按 dsh 启动加载器的真实解析顺序检查每个 bundle 能否解析，把本机装不上的（典型情况：`link:` 依赖来自另一台机器）从 profile 移除并明确报告 —— **避免恢复后重启直接进恢复模式**
-- **上传记录**：最近 20 条，存 dsh-storage 域（不可用时回退 `config.json`），支持一键清空
+- **上传记录**：最近 20 条，存 dsh-storage 域（不可用时回退 `config.json`），支持一键清空。记录含 `new` / `update` / `failed` 三种状态，失败行红色徽章 + 悬停显示错误原因。存储层声明 `invalidRecords: 'backup-and-skip'`，单条脏记录（schema 演进 / 手编辑 / 写损坏）会被移走而非让整表丢失；key 带 4 字节随机后缀，同毫秒两次写入不再覆盖
 - **设置页 UI**：Token 独立保存按钮、测试连接、立即备份、恢复进度实时显示、右上角浮动 toast 提示
 - **明确的中文失败原因**：未配置 token / token 无效 / gist id 无效 / 备份超 1MB 等。错误按 `auth`(401) / `not_found`(404) / `rate_limit`(403) / `invalid`(422) / `timeout` / `network` 分类返回，前端可按 code 精确映射文案，区别「GitHub 不可达」与「请求超时」
 - **请求防卡死**：每次 GitHub 请求带 `AbortSignal.any([调用方 signal, 30s 硬上限])` 双保险，路由级超时优先触发、30s 兜底保证永不挂起；GET 响应在 `content-length` 头预判 + 流式累计双重把关下限制在 1MB+16KB，防止超大响应撑爆内存
@@ -39,7 +40,7 @@ dsh plugin --profile web add dsh-market-gist-autosync       # 网页版（dsh we
 3. 环境变量 `DSH_PROFILE`（测试/手动覆盖用，运行时本身不设置）
 4. 兜底默认 `desktop`
 
-注意：两个 profile 的插件配置共享同一份 `$DSH_HOME/gist-autosync/config.json`（同一个 token / gistId）。**如果桌面端和网页版同时运行且都开了定时备份，两边会按各自的计时器上传到同一个 Gist**——备份内容以各自 profile 为准（envelope 里有 `profile` 字段区分来源），上传记录会交错出现。不想双份上传的话，只在一端开启定时即可。
+注意：两个 profile 的插件配置共享同一份 `$DSH_HOME/gist-autosync/config.json`（同一个 token / gistId）。**如果桌面端和网页版同时运行且都开了定时备份，两边会按各自的计时器上传到同一个 Gist**——备份内容以各自 profile 为准（envelope 里有 `profile` 字段区分来源），上传记录会交错出现。进程内互斥锁只挡同一进程的并发（定时 tick + 手动备份），**跨进程（桌面端 + 网页版同跑）仍会并发上传**，两边各自 create/update 同一 gist 时后写者覆盖前写者。不想双份上传的话，只在一端开启定时即可。
 
 ## 备份内容
 
@@ -77,14 +78,14 @@ dsh 启动加载器按 `dsh.profile.bundles` 的顺序加载插件，**遇到第
 
 ## 配置
 
-配置持久化在 `$DSH_HOME/gist-autosync/config.json`；上传记录存 dsh-storage 域，不写入配置文件。
+配置持久化在 `$DSH_HOME/gist-autosync/config.json`（原子写：临时文件 + rename，崩溃不截断）；上传记录存 dsh-storage 域，不写入配置文件。
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `gistToken` | `""` | GitHub token（明文存本地文件）；环境变量 `DSH_GITHUB_TOKEN` 优先于此字段 |
 | `gistId` | `""` | 已有 Gist id 或 URL；空 = 每次新建 Gist，成功后自动回写 |
 | `deviceName` | `""` | 设备名（空则自动探测 `COMPUTERNAME` / `HOSTNAME`） |
-| `scheduleEnabled` | `false` | 是否定时备份 |
+| `scheduleEnabled` | `false` | 是否定时备份（仅 DSH 运行期间执行） |
 | `scheduleIntervalValue` | `24` | 周期间隔数值（≥1） |
 | `scheduleIntervalUnit` | `"hour"` | 周期单位：`"hour"` / `"minute"` |
 | `includeLock` | `false` | 同时备份 `pnpm-lock.yaml`（精确复现依赖版本） |

@@ -11,6 +11,7 @@
  * Falls back to the legacy config.json `uploads` array when the storageDomain
  * service is unavailable (a host without dsh-base's storage layer).
  */
+import { randomBytes } from 'node:crypto'
 import { z } from 'zod'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import { MAX_UPLOAD_RECORDS, readBackupConfig, writeBackupConfig, type GistBackupConfig, type UploadRecord } from './config.js'
@@ -26,8 +27,17 @@ const uploadRecordSchema = z.object({
   gistId: z.string(),
   deviceName: z.string(),
   uploadedAt: z.string(),
-  status: z.union([z.literal('new'), z.literal('update')]),
+  // 'failed' = the attempt failed (see `error`). Kept as a literal in the union
+  // because every writer is in-repo and the value set is closed; this stays
+  // parse-safe for old rows (which never carry 'failed') while new versions
+  // can persist them. An unknown value here would still break reopen, but the
+  // only producer is this code, unlike `source` which is widened to string on
+  // purpose.
+  status: z.union([z.literal('new'), z.literal('update'), z.literal('failed')]),
   bytes: z.number(),
+  // Failure detail when status is 'failed'. Optional so pre-failure-era rows
+  // (and successful ones) still parse.
+  error: z.string().optional(),
   // Deliberately z.string(), not a literal union — see UploadRecord.source.
   // An unknown value MUST parse successfully: this table is only validated on
   // reopen, and a single unparseable row fails the whole domain's loadAll(),
@@ -38,8 +48,21 @@ const uploadRecordSchema = z.object({
 export const uploadDomainSpec = defineDomain({
   name: 'gist_autosync',
   version: 1,
+  // A single unparseable record must NOT take down the whole table. Without
+  // this, one bad row (a future schema change an old version can't parse, a
+  // hand-edited file, a corrupted write) makes open() throw → openStoreWhenReady
+  // catches and returns null → silent fallback to config.json, which
+  // migrateLegacyUploads() has already emptied → the UI shows ZERO records with
+  // no error. backup-and-skip moves the offender aside and loads the rest.
+  //
+  // The field exists in the resolved 0.1.7-rc.2 spec.d.ts
+  // (readonly invalidRecords?: 'backup-and-skip'), but tsc with
+  // moduleResolution "Bundler" fails to follow the package's `./spec.ts`
+  // relative import and reports the field as unknown — cast to suppress the
+  // false positive; runtime validated against the package source.
+  invalidRecords: 'backup-and-skip',
   tables: { uploads: domainTable(uploadRecordSchema) },
-})
+} as Parameters<typeof defineDomain>[0])
 
 /** Minimal structural type of an open domain handle (avoid deep generics). */
 export interface UploadStore {
@@ -75,8 +98,13 @@ export async function openUploadStore(ctx: any): Promise<UploadStore | null> {
         console.error(`[gist-autosync] refusing to store upload record: ${detail}`)
         throw new Error(`upload record failed schema validation: ${detail}`)
       }
-      // Key by timestamp; ISO strings sort chronologically for trimming.
-      await table.put(record.uploadedAt, record)
+      // Key by timestamp + 4 random bytes: two backups landing in the same
+      // millisecond (timer overlap, manual+during-schedule) would otherwise
+      // collide and silently overwrite. The ISO prefix keeps chronological
+      // sort order for trimming; old keys (pure ISO, no suffix) sort correctly
+      // alongside new ones because ISO strings are prefix-ordered.
+      const key = `${record.uploadedAt}-${randomBytes(4).toString('hex')}`
+      await table.put(key, record)
       // Trim to the newest MAX_UPLOAD_RECORDS. NOTE: keys()/entries() return
       // ITERATORS (the domain re-exposes a snapshot iterator), not arrays —
       // spread before calling .sort()/.map().

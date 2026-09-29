@@ -2,6 +2,21 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.8] - 2026-09-28
+
+### 修复
+
+- **定时备份失败静默丢失**（严重）：定时备份失败此前只 `console.error`，UI 上看起来一切正常，「上次备份」时间悄悄停在几周前——备份链早断了用户却毫无察觉。现在失败也写一条 `status: 'failed'` 的上传记录进 storage domain（含错误原因），UI 上以红色「失败」徽章展示，鼠标悬停显示错误详情；「上次备份」只统计成功记录，全部失败时显示「上次成功备份：无」。
+- **config.json 非原子写 → token/gistId 静默丢失**：`writeBackupConfig` 此前用裸 `writeFileSync`，崩溃中途截断会让 `readBackupConfig` 静默回默认值，token 和 gistId 全丢。改为调用同文件已有的 `writeFileAtomic`（临时文件 + rename），崩溃不会截断。
+- **存储层一条脏记录 = 全表丢失**（严重）：`uploadDomainSpec` 未声明 `invalidRecords: 'backup-and-skip'`，一条不合规记录（未来 schema 演进、手编辑、写损坏）会让 `open()` 抛错 → 静默降级 config.json → 迁移已清空 → UI 历史归零。现在脏记录会被 `backupRecord` 移走并记日志，其余记录照常加载。
+- **同毫秒两次备份静默覆盖**：storage domain 的 key 此前用纯 `uploadedAt`（ISO 毫秒），定时器重叠或手动+定时并发时同毫秒写入会让第二条覆盖第一条。key 改为 `uploadedAt + "-" + randomBytes(4)`，ISO 前缀保证排序仍按时间。
+
+### 变更
+
+- **备份加互斥锁**：复用 restore 的并发保护模式，新增 `backupInFlight` 标志。定时 tick 撞上正在跑的备份时跳过本次（不记失败、不污染历史）；手动备份撞上时返回 `backup_in_progress` 让 UI toast 提示。消除并发空 gistId 场景下建双 gist + 孤儿 + config 竞态覆盖的路径。
+- **UI 新增定时备份警告**：开启定时备份后，执行区域出现黄色警告条「⚠ 定时备份仅在 DSH 运行期间执行。DSH 关闭、退出或电脑休眠时不会备份，也不会补跑错过的周期。」——明确「进程内 setInterval」的语义边界，避免用户误以为这是系统级 cron。
+- **上传记录失败行渲染**：表格支持 `failed` 状态行——红色徽章「失败」、大小列显示「-」、悬停 tooltip 显示错误原因。
+
 ## [0.1.6] - 2026-09-27
 
 ### 修复

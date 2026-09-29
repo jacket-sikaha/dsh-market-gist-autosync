@@ -23,6 +23,7 @@ import {
   scheduleIntervalMs,
   GIST_TOKEN_ENV,
   MAX_UPLOAD_RECORDS,
+  err,
   type GistBackupConfig,
   type UploadRecord,
 } from "./config.js";
@@ -91,6 +92,15 @@ let restoreProgress: RestoreProgressState = {
   lines: [],
   done: true,
 };
+
+/**
+ * Backup mutex. A backup collects the live profile and PATCHes a single gist:
+ * two concurrent backups race the same file, and a "create fresh gist" run
+ * racing a scheduled "update" run can spawn a second orphan gist whose id
+ * then overwrites the real one in config.json. Scheduled runs SKIP (log +
+ * skip this tick); manual runs are rejected so the UI can surface the clash.
+ */
+let backupInFlight = false;
 
 function progressToLine(p: InstallProgress): string {
   switch (p.phase) {
@@ -211,22 +221,72 @@ async function apply(ctx: any, rawConfig: any) {
     }
   };
 
-  /** doBackup + record persistence, shared by the timer and the RPC. */
+  /**
+   * doBackup + record persistence, shared by the timer and the RPC.
+   *
+   * Mutex: only one backup at a time. Scheduled runs that collide are
+   * skipped (returning a no-op Result with code 'backup_in_progress'); manual
+   * runs that collide are rejected the same way so the UI can toast it.
+   *
+   * Failure recording: when doBackup returns !ok, we persist a 'failed' record
+   * so the broken backup chain is visible in the upload-history UI instead of
+   * only in a console.error nobody reads. The gistId on a failure is the
+   * configured one (or '-' when none is saved yet) — the attempt never reached
+   * GitHub, so there is no real id to record.
+   */
   const runBackup = async (
     gistOverride?: string,
     source: "scheduled" | "manual" = "manual",
   ) => {
-    const r = await doBackup(readBackupConfig(), apiHost, gistOverride, source);
-    if (r.ok && r.record) {
-      try {
-        await recordUpload(r.record as UploadRecord);
-      } catch (e) {
-        console.error(
-          `[gist-autosync] failed to record upload: ${e instanceof Error ? e.message : String(e)}`,
-        );
-      }
+    if (backupInFlight) {
+      // A skip, not a failure: do not pollute the history with a red row.
+      return err("backup_in_progress", "已有备份操作正在进行，请稍后再试");
     }
-    return r;
+    backupInFlight = true;
+    try {
+      const cfg = readBackupConfig();
+      const r = await doBackup(cfg, apiHost, gistOverride, source);
+      // On success, persist the success record doBackup produced.
+      if (r.ok && r.record) {
+        try {
+          await recordUpload(r.record as UploadRecord);
+        } catch (e) {
+          console.error(
+            `[gist-autosync] failed to record upload: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+        return r;
+      }
+      // On failure, persist a 'failed' record so the gap is visible in the
+      // UI history instead of silently swallowed. The configured gistId is
+      // the best label we have (the attempt may not have reached GitHub).
+      //
+      // Type narrowing: Result's ok:true branch carries an index signature
+      // ([k: string]: unknown), so a successful-but-recordless result leaves
+      // r typed as the success branch where .error is unknown. Guard with
+      // !r.ok so TS knows we are in the error branch where .error is string.
+      if (!r.ok) {
+        const failed: UploadRecord = {
+          gistId: (gistOverride ?? cfg.gistId).trim() || "-",
+          deviceName: cfg.deviceName.trim() || deviceName(),
+          uploadedAt: new Date().toISOString(),
+          status: "failed",
+          bytes: 0,
+          source,
+          error: r.error,
+        };
+        try {
+          await recordUpload(failed);
+        } catch (e) {
+          console.error(
+            `[gist-autosync] failed to record failed upload: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
+      return r;
+    } finally {
+      backupInFlight = false;
+    }
   };
 
   /** Wipe upload history (domain store when available, else legacy file). */

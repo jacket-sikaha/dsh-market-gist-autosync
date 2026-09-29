@@ -97,9 +97,15 @@ export interface UploadRecord {
   gistId: string
   deviceName: string
   uploadedAt: string
-  /** 'new' = created a fresh gist; 'update' = overwrote an existing one. */
-  status: 'new' | 'update'
+  /**
+   * 'new' = created a fresh gist; 'update' = overwrote an existing one;
+   * 'failed' = the backup attempt failed (see `error`). Recording failures is
+   * what makes a broken backup chain visible in the UI instead of silent.
+   */
+  status: 'new' | 'update' | 'failed'
   bytes: number
+  /** Failure message when status is 'failed'. */
+  error?: string
   /**
    * Who triggered this backup: the schedule timer or a manual click.
    *
@@ -185,8 +191,9 @@ export function readBackupConfig(): GistBackupConfig {
 }
 
 export function writeBackupConfig(cfg: GistBackupConfig): void {
-  mkdirSync(configDirPath(), { recursive: true })
-  writeFileSync(configFilePath(), JSON.stringify(cfg, null, 2), 'utf8')
+  // Atomic: a crash mid-write must not truncate config.json — a truncated file
+  // parses as "no config", silently dropping the saved token and gistId.
+  writeFileAtomic(configFilePath(), JSON.stringify(cfg, null, 2))
 }
 
 export function deviceName(): string {
