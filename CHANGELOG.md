@@ -2,6 +2,13 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.9] - 2026-10-05
+
+### 变更
+
+- **兼容 DSH 0.2.0-rc.2**：三个宿主包的 peerDependencies 各追加 `^0.2.0-rc.1`（dsh-host-webserver / dsh-settings / dsh-storage-domain，沿用 dshmarket 的 range 写法），保持向后兼容旧版本（0.1.5-rc.1+）。功能代码零改动——已对 0.2.0-rc.2 逐一核实插件用到的全部宿主契约：`webServer.register({kind:'exact'})` 路由注册、`storageDomain` 服务（`defineDomain` / `domainTable` / `invalidRecords: 'backup-and-skip'` / `table.put/delete/keys()/entries()` 迭代器 / `domain.close()`）、客户端 `window.__ModuleLoader__` 加载格式、`schemastery` 3.18.4、`zod` 4.4.3、`cordis` 4.0.4，全部保持不变。
+- devDependencies 对齐：`dsh-storage-domain` 升到 `^0.2.0-rc.1`，类型检查对着新版 API 跑。
+
 ## [0.1.8] - 2026-09-28
 
 ### 修复
@@ -108,6 +115,7 @@
 - 严格备份结构校验（格式、路径安全、无重复路径），上限 256 文件 / 1MB。
 - 设置页 UI：Token 独立保存、测试连接、立即备份、恢复进度、上传记录（最近 20 条）、浮动 toast 提示。
 
+[0.1.9]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.8...v0.1.9
 [0.1.3]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.0...v0.1.1
