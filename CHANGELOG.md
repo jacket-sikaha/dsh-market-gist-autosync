@@ -15,6 +15,9 @@
 - **校验放过了「不是本插件的备份」**：`validateBackupStrict` 此前只要求 `format` 是非空字符串，任何格式名都能通过，既不比对 `version`、也不要求含 `package.json`、也不限总大小。现在与 dshmarket 的 `validatedBackup` 逐条对齐：`format` 必须是 `dsh-profile-backup`、`version` 必须是 `0.2`、必须有一份 `package.json`（只有它用 `json`，其余文件必须给 `lines`）、总大小上限 2 MB。其中影响最大的是「没有 package.json 也能恢复」—— 恢复要靠它决定装哪些插件，缺这一项会变成「恢复成功，但插件一个都没回来」，而用户看不出哪里不对。
 - **恢复会穿过符号链接写到 profile 之外**（严重）：此前建父目录用 `mkdirSync(dirname, { recursive: true })`，路径上的中间层一概不检查。备份里一条 `dsh/plugins/x.json`，只要 `dsh` 是指向 profile 外部的链接，文件就落到外部去了。现在按 dshmarket 的 `ensureSafeParent` 方式逐段建目录，每段都必须是真实目录；另外补了一条 `realpathSync.native` 的真实路径比对 —— Windows 目录联接（junction）的 `lstat` 会报「普通目录、非符号链接」，只照抄上游那套 `lstat` 检查在本机实测仍被穿过（文件确实写到了 profile 外），只有解析真实路径才拦得住。
 - **新增 `scripts/itest-restore-safety.mjs`**：覆盖链接父目录被拒、`..` 逃逸被拒、目录挡在文件位被拒、正常嵌套路径仍能建目录写入。`itest-strict-validation.mjs` 同步扩到 19 个用例（格式名、版本、缺 package.json、2 MB 上限等），其旧用例的 `format: 'x'` 夹具在新契约下会先被格式门槛拦下，已改为合法信封再逐条断言各条规则。
+- **下载断流要等 30 秒才报错**：`gistHttp` 的响应只挂了 `end`，响应中途断流（连接重置、body 传一半、或我们自己 `destroy`）根本不会发 `end`，Promise 只能干等那个 30 秒硬顶 —— 明明早就失败了，用户还在看转圈。现在补 `res.once('error')`（与 dshmarket 的 `gistRequest` 一致），当场以 `netError` 结算。
+- **超限响应报的是一句英文**：顺着上一条把 `destroy` 的原因从 `GitHub response is too large` 改成「GitHub 返回的内容超过备份大小上限，已中止读取」—— 这句话会原样显示在界面上。
+- **不再按 `dsh-config-backup.json` 这个文件名猜**：`readGistBackupContent` 曾为这个上游从来不写的名字留一档兜底。认一个我们从不产出的名字，只会多一条读到错文件的路径。现在只认自己的文件名，或内容自称是 dsh 备份的那个文件 —— 手工建的 gist 照样能读（互通本来就靠内容识别覆盖），`cross-verify.cjs` 场景 4 改为断言「名字不被认、内容才被认」。
 
 ### 界面
 

@@ -88,7 +88,7 @@ console.log('\n========== 场景2：dsh-market 导出 → 工作区导入 ======
   // Gist 服务器返回
   const gistPayloadFromDM = { files: { [head.DM_GIST_FILENAME]: { content: dmContent } } }
 
-  // 工作区 readGistBackupContent：取 content（含 fallback 探测）
+  // 工作区 readGistBackupContent：取 content（自己的文件名优先，内容识别兜底）
   const wsContent = head.ws_findBackupContent(gistPayloadFromDM.files)
   check('工作区能从 dsh-market 写的 Gist 里取到 content', wsContent !== null)
 
@@ -122,7 +122,7 @@ console.log('\n========== 场景3：正常备份（无本机路径依赖）双�
   check('工作区正常备份 → dsh-market校验通过', ok2, err2)
 }
 
-console.log('\n========== 场景4：边界——文件名不同时工作区的 fallback 探测 ==========')
+console.log('\n========== 场景4：边界——文件名不被认，内容才被认 ==========')
 {
   // 模拟一个老版本/别的工具写的 Gist，文件名不是 dsh-profile-backup.json
   const oldBackup = head.dm_createProfileBackup('desktop', sampleFiles)
@@ -133,9 +133,17 @@ console.log('\n========== 场景4：边界——文件名不同时工作区的 f
   const dmFound = head.dm_findBackupContent(gistWithOtherName.files)
   check('dsh-market 读不到非标准文件名的 Gist（只认 dsh-profile-backup.json）', dmFound === null)
 
-  // 工作区有 fallback：先试 dsh-config-backup.json
+  // 工作区仍能读到它 —— 但靠的是内容自称 dsh 备份，不是这个文件名
   const wsFound = head.ws_findBackupContent(gistWithOtherName.files)
-  check('工作区 fallback 能读到 dsh-config-backup.json 文件名', wsFound !== null)
+  check('工作区读到它靠内容识别（手工建的 gist 照样可用）', wsFound === oldContent)
+
+  // 名字被认的证据：同样的文件名，内容不是 dsh 备份 → 拒绝
+  const gistWithJunk = { files: { 'dsh-config-backup.json': { content: '{"hello":1}' } } }
+  check('工作区不认 dsh-config-backup.json 这个名字本身（内容不自称备份就拒）', head.ws_findBackupContent(gistWithJunk.files) === null)
+
+  // 任意文件名的真备份也能按内容读到
+  const gistWithOddName = { files: { 'whatever.json': { content: oldContent } } }
+  check('工作区按内容识别能读到任意文件名的备份', head.ws_findBackupContent(gistWithOddName.files) === oldContent)
 }
 
 console.log('\n========== 总结 ==========')

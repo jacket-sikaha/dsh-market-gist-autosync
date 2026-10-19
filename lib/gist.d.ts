@@ -21,13 +21,15 @@ export declare function gistHttp(token: string, method: string, path: string, bo
 /** Map a GitHub HTTP failure to a typed Result. */
 export declare function classify(status: number, body: string): Result;
 /** Turn a netError-bearing GistHttpResult into a typed Result. */
-/** Turn a netError-bearing GistHttpResult into a typed Result. */
 export declare function failNet(r: GistHttpResult): Result;
 export declare function createGist(token: string, content: string, host: string, signal?: AbortSignal): Promise<Result>;
 export declare function updateGist(token: string, gistId: string, content: string, host: string, signal?: AbortSignal): Promise<Result>;
 export declare function verifyToken(token: string, host: string, signal?: AbortSignal): Promise<Result>;
-/** Fetch the raw text of the backup file inside a gist. Accepts our filename,
- * dshmarket's filename, or any single file whose content looks like a backup. */
+/** Fetch the raw text of the backup file inside a gist. Accepts our own
+ * filename, or any single file whose content identifies itself as a dsh profile
+ * backup (so a gist put together by hand still works). No other file-name
+ * guesses: a name we never write only widens the surface for misreading the
+ * wrong file. */
 export declare function readGistBackupContent(token: string, gistId: string, host: string, signal?: AbortSignal): Promise<{
     ok: true;
     content: string;

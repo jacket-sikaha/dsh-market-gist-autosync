@@ -84,6 +84,9 @@ function localGistHttp(token, method, path, body, host, port, signal) {
     const effectiveSignal = signal !== undefined ? AbortSignal.any([signal, hardCeiling]) : hardCeiling
     const req = httpRequest({ hostname: host, port, path, method, headers, signal: effectiveSignal }, (res) => {
       const chunks = []; let size = 0
+      // 断流（socket reset / 半截 body / 下面的 destroy）不会发 'end'，没有这个
+      // 监听就只能干等 30s 硬顶 —— 与 src/gist.ts 的 gistHttp 保持一致。
+      res.once('error', (e) => resolve({ status: 0, body: '', netError: e.message, netErrorCode: classifyNetError(e) }))
       const maxBytes = GIST_MAX_BYTES + 16*1024
       const declared = Number(res.headers['content-length'])
       if (Number.isFinite(declared) && declared > maxBytes) { res.destroy(new Error('too large')); return }
@@ -134,6 +137,22 @@ function localGistHttp(token, method, path, body, host, port, signal) {
     check('正常响应 → status 200', r.status === 200)
     check('正常响应 → 无 netError', !r.netError)
     check('正常响应 → body 正确', JSON.parse(r.body).id === 'abc')
+  } finally { await close() }
+}
+
+console.log('\n========== 场景D：响应中途断流 → 立即结束，不等 30s ==========')
+{
+  const { server, port, host, close } = await withServer((req, res) => {
+    res.writeHead(200, { 'content-length': '1048576', 'content-type': 'application/json' })
+    res.write('{"files":')          // 半截 body
+    setTimeout(() => res.destroy(), 20)  // 然后连接直接断掉
+  })
+  try {
+    const t0 = Date.now()
+    const r = await localGistHttp('tok', 'GET', '/gists/x', undefined, host, port)
+    const elapsed = Date.now() - t0
+    check('断流 → 有 netError', !!r.netError, JSON.stringify(r))
+    check('断流 → 不挂起（< 2000ms，硬顶是 30s）', elapsed < 2000, elapsed + 'ms')
   } finally { await close() }
 }
 

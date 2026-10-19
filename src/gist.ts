@@ -26,6 +26,9 @@ const NETWORK_ERROR_CODES = new Set([
   'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH', 'ECONNABORTED',
 ])
 
+/** Reason attached when a response body exceeds the cap; it reaches the UI. */
+const RESPONSE_TOO_LARGE = 'GitHub 返回的内容超过备份大小上限，已中止读取'
+
 export interface GistHttpResult {
   status: number
   body: string
@@ -71,6 +74,11 @@ export function gistHttp(token: string, method: string, path: string, body?: str
       (res) => {
         const chunks: Buffer[] = []
         let size = 0
+        // A response that dies mid-stream (socket reset, truncated body, or our
+        // own destroy below) never emits 'end'. Without this listener the
+        // promise would sit until the 30s ceiling and the user would watch a
+        // spinner for a failure that had already happened.
+        res.once('error', (e: Error) => resolve({ status: 0, body: '', netError: e.message, netErrorCode: classifyNetError(e) }))
         // GET returns the whole Gist including metadata; POST/PATCH echo the
         // file content back, so a large upload makes the response as large. Cap
         // all methods alike so a hostile Gist cannot OOM us.
@@ -79,13 +87,13 @@ export function gistHttp(token: string, method: string, path: string, body?: str
         // before the first chunk is ever buffered.
         const declared = Number(res.headers['content-length'])
         if (Number.isFinite(declared) && declared > maxBytes) {
-          res.destroy(new Error('GitHub response is too large'))
+          res.destroy(new Error(RESPONSE_TOO_LARGE))
           return
         }
         res.on('data', (chunk: Buffer) => {
           size += chunk.length
           chunks.push(chunk)
-          if (size > maxBytes) res.destroy(new Error('GitHub response is too large'))
+          if (size > maxBytes) res.destroy(new Error(RESPONSE_TOO_LARGE))
         })
         res.on('end', () => resolve({ status: res.statusCode || 0, body: Buffer.concat(chunks).toString('utf8') }))
       },
@@ -112,7 +120,6 @@ export function classify(status: number, body: string): Result {
   return err('other', `HTTP ${status} ${msg}`)
 }
 
-/** Turn a netError-bearing GistHttpResult into a typed Result. */
 /** Turn a netError-bearing GistHttpResult into a typed Result. */
 export function failNet(r: GistHttpResult): Result {
   const code = r.netErrorCode ?? 'other'
@@ -159,8 +166,11 @@ export async function verifyToken(token: string, host: string, signal?: AbortSig
   return { ok: true, message: '连接正常' }
 }
 
-/** Fetch the raw text of the backup file inside a gist. Accepts our filename,
- * dshmarket's filename, or any single file whose content looks like a backup. */
+/** Fetch the raw text of the backup file inside a gist. Accepts our own
+ * filename, or any single file whose content identifies itself as a dsh profile
+ * backup (so a gist put together by hand still works). No other file-name
+ * guesses: a name we never write only widens the surface for misreading the
+ * wrong file. */
 export async function readGistBackupContent(token: string, gistId: string, host: string, signal?: AbortSignal): Promise<{ ok: true; content: string } | { ok: false; code: string; error: string }> {
   const r = await gistHttp(token, 'GET', `/gists/${gistId}`, undefined, host, signal)
   if (r.netError) return failNet(r) as { ok: false; code: string; error: string }
@@ -173,7 +183,6 @@ export async function readGistBackupContent(token: string, gistId: string, host:
   }
   const filesObj = data.files ?? {}
   const candidate = filesObj[GIST_FILENAME]?.content
-    ?? filesObj['dsh-config-backup.json']?.content
     ?? (Object.values(filesObj).find((f) => typeof f?.content === 'string' && f.content.includes('"dsh-profile-backup"'))?.content)
   if (typeof candidate !== 'string') return err('invalid', 'Gist 中找不到 dsh 备份文件') as { ok: false; code: string; error: string }
   return { ok: true, content: candidate }

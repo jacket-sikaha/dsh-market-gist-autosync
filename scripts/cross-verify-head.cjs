@@ -3,18 +3,21 @@
 const WS_BACKUP_FORMAT = 'dsh-profile-backup'
 const WS_BACKUP_VERSION = 0.2
 const WS_MAX_BACKUP_FILES = 256
-const WS_PROFILE_SKIP = new Set(['node_modules', '.dsh-market', '.git'])
+const WS_MAX_BACKUP_BYTES = 2 * 1024 * 1024
+const WS_PROFILE_SKIP = new Set(['node_modules', '.dsh-market', '.git', 'pnpm-lock.yaml'])
 const WS_GIST_FILENAME = 'dsh-profile-backup.json'
 const WS_GIST_MAX_BYTES = 1024 * 1024
 
 function ws_validateBackupStrict(value) {
   if (value === null || typeof value !== 'object') return '备份不是对象'
   const b = value
-  if (typeof b.format !== 'string' || b.format === '') return '缺少 format 字段'
+  if (b.format !== WS_BACKUP_FORMAT) return 'format 不是 ' + WS_BACKUP_FORMAT
+  if (b.version !== WS_BACKUP_VERSION) return '版本不受支持: ' + String(b.version)
   if (!Array.isArray(b.files)) return '缺少 files 数组'
   if (b.files.length > WS_MAX_BACKUP_FILES) return '备份文件过多（>' + WS_MAX_BACKUP_FILES + '）'
   const { isAbsolute } = require('node:path')
   const paths = new Set()
+  let hasManifest = false
   for (const f of b.files) {
     if (f === null || typeof f !== 'object') return 'files 含非对象项'
     const file = f
@@ -24,21 +27,22 @@ function ws_validateBackupStrict(value) {
     if (normalized.split('/').some((part) => WS_PROFILE_SKIP.has(part))) return '含被排除的路径: ' + file.path
     if (paths.has(normalized)) return '重复的备份路径: ' + file.path
     paths.add(normalized)
-    const hasJson = file.json !== undefined
-    const hasLines = Array.isArray(file.lines)
-    if (!hasJson && !hasLines) return '文件既无 json 也无 lines: ' + file.path
-    if (file.path === 'package.json' && hasJson) {
-      if (file.json === null || typeof file.json !== 'object' || Array.isArray(file.json)) return 'package.json 的 json 不是对象'
+    if (normalized === 'package.json') {
+      if (file.json === null || typeof file.json !== 'object' || Array.isArray(file.json)) return 'package.json 必须是 json 对象'
+      hasManifest = true
+    } else if (!Array.isArray(file.lines) || !(file.lines).every((l) => typeof l === 'string')) {
+      return '必须是行数组: ' + file.path
     }
-    if (hasLines && !(file.lines).every((l) => typeof l === 'string')) return 'lines 含非字符串: ' + file.path
   }
+  if (!hasManifest) return '备份里没有 package.json'
+  if (Buffer.byteLength(JSON.stringify(value), 'utf8') > WS_MAX_BACKUP_BYTES) return '备份过大'
   return null  // null = 校验通过
 }
 
 // 工作区 readGistBackupContent 的文件名探测逻辑（模拟从 Gist JSON 取 content）
+// 只认自己的文件名，或内容自称是 dsh 备份的单个文件；不按别家的文件名兜底。
 function ws_findBackupContent(gistFilesObj) {
   const candidate = gistFilesObj[WS_GIST_FILENAME]?.content
-    ?? gistFilesObj['dsh-config-backup.json']?.content
     ?? (Object.values(gistFilesObj).find((f) => typeof f?.content === 'string' && f.content.includes('"dsh-profile-backup"'))?.content)
   return typeof candidate === 'string' ? candidate : null
 }
