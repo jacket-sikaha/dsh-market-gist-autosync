@@ -31,6 +31,12 @@ dsh plugin --profile web add dsh-market-gist-autosync       # 网页版（dsh we
 
 安装后在 **设置 → Gist 备份** 中配置。
 
+## 兼容的 DSH 版本
+
+宿主包的 peer 范围覆盖 `0.1.5-rc.1` 起的全部版本，含 `0.2.0-rc` 与 `0.2.1-rc` 两条线；开发与联调跑在 **0.2.1-rc.2**（`cordis` 4.0.5、`dsh-host-webserver` / `dsh-settings` / `dsh-storage-domain` 均 0.2.1-rc.2、`schemastery` 3.18.5、`zod` 4.6.7）。
+
+`scripts/itest-host-compat.mjs` 会用真宿主跑一遍：起真 `cordis` Context、真 `dsh-host-webserver`（`port: 0`，端口由系统分配），把插件按 DSH 的方式挂上去，再用真实 HTTP 打自己的 RPC —— 宿主契约一变，这里先红，而不是等用户装上去才发现。
+
 ## 多 profile 支持
 
 插件自动识别自己运行在哪个 profile（desktop / web），备份内容与恢复目标始终是**当前 profile**。识别顺序与 dshmarket 一致：
@@ -122,6 +128,7 @@ pnpm build   # Vite 8 (rolldown) 把 host 半打包为单文件 ESM 到 lib/
 | 脚本 | 覆盖点 |
 | --- | --- |
 | `smoke-apply.mjs` | 真实 cordis apply + RPC handler 级端到端验证 |
+| `itest-host-compat.mjs` | 真宿主联调：真 cordis + 真 `dsh-host-webserver` 挂载插件，真实 HTTP 验证 RPC 姿态（200 / 跨源 403 / GET 405 / dispose 释放端口） |
 | `itest-compat.mjs` | 备份格式与 dshmarket 恢复完全兼容 |
 | `itest-restore.mjs` | 合并恢复语义（现有插件被保留） |
 | `itest-restore-safety.mjs` | 恢复不穿过符号链接/目录联接写到 profile 之外；`..` 逃逸、目录占在文件位被拒 |

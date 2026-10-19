@@ -2,6 +2,22 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.11] - 2026-10-19
+
+### 变更
+
+- **适配 DSH 0.2.1-rc.2**：三个宿主包的 peerDependencies 各追加 `^0.2.1-rc.1`（`0.2.0-rc` 线保留），开发依赖升到 `@deepseek-ai/cordis` ^4.0.5、`@deepseek-ai/dsh-host-webserver` / `dsh-settings` / `dsh-storage-domain` ^0.2.1-rc.2、`@deepseek-ai/schemastery` ^3.18.5、`zod` ^4.6.7、`@types/node` ^26.6.5。注意 `^0.2.0-rc.1` 匹配不到 `0.2.1-rc.2` —— semver 要求预发布段的 `major.minor.patch` 与比较器完全一致，所以这一条必须单独写出来。
+- **本地类型声明保留，理由已更新**：`dsh-storage-domain` 0.2.1-rc.2 确实发布了 `lib/types/`，但直接用它的 `domainTable<ZodType<V>>` 签名会让 zod schema 触发 `TS2589`（类型实例化过深），因此仍用 `src/types/` 里的结构式重声明，运行时用真包。注释从「该包不发布 .d.ts」更正为这个实际原因。
+
+### 新增
+
+- **`scripts/itest-host-compat.mjs`（真宿主联调）**：真 `cordis` Context + 真 `dsh-host-webserver`（0.2.1-rc.2，`port: 0` 由系统分配端口），把插件按 DSH 的方式 `ctx.plugin()` 挂上去，再用真实 HTTP 打自己的 RPC 路由：POST `getConfig` 应答 200、跨源 `Origin` 403、GET 405 且带 `allow: POST`、dispose 后端口释放。此前只有 `smoke-apply.mjs` 的 handler 级替身，宿主契约变动要等用户装上才发现。
+
+### 说明
+
+- 0.2.0-rc.2 → 0.2.1-rc.2 的契约比对：`dsh-storage-domain/lib/types/spec.d.ts` 与 `dsh-client-ui-settings` 的 `slots.d.ts` **逐字节相同**；`dsh-host-webserver` 的 d.ts 只有新增（`TlsConfig`、`getOrigin()`、`isWildcardHost` / `isLoopbackHost` / `normalizeBindAddress` / `bindUrlHost`，以及 `Config.host` 由字面量联合放宽为 `string`），`register` 与 `WebRoute` 未变。因此功能代码零改动 —— 这次只动依赖范围与验证手段。
+- 全部 15 个测试脚本通过（含新增的 host-compat），`tsc --noEmit` 通过，产物重建。
+
 ## [0.1.10] - 2026-10-19
 
 ### 变更
@@ -136,6 +152,7 @@
 - 严格备份结构校验（格式、路径安全、无重复路径），上限 256 文件 / 1MB。
 - 设置页 UI：Token 独立保存、测试连接、立即备份、恢复进度、上传记录（最近 20 条）、浮动 toast 提示。
 
+[0.1.11]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.8...v0.1.9
 [0.1.3]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.2...v0.1.3

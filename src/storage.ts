@@ -55,11 +55,11 @@ export const uploadDomainSpec = defineDomain({
   // migrateLegacyUploads() has already emptied → the UI shows ZERO records with
   // no error. backup-and-skip moves the offender aside and loads the rest.
   //
-  // The field exists in the resolved 0.1.7-rc.2 spec.d.ts
-  // (readonly invalidRecords?: 'backup-and-skip'), but tsc with
-  // moduleResolution "Bundler" fails to follow the package's `./spec.ts`
-  // relative import and reports the field as unknown — cast to suppress the
-  // false positive; runtime validated against the package source.
+  // The field exists in the resolved 0.2.1-rc.2 spec.d.ts
+  // (readonly invalidRecords?: 'backup-and-skip'), but this file compiles
+  // against the local structural shim in src/types/ (see its header for why
+  // the package's own types hit TS2589), which does not declare it — cast to
+  // suppress the false positive; runtime validated against the package source.
   invalidRecords: 'backup-and-skip',
   tables: { uploads: domainTable(uploadRecordSchema) },
 } as Parameters<typeof defineDomain>[0])

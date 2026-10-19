@@ -1,6 +1,6 @@
 {
   "name": "dsh-market-gist-autosync",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "DSH plugin: back up your DSH configuration to GitHub Gist on a schedule. · 把 DSH 配置定时备份到 GitHub Gist。",
   "type": "module",
   "main": "lib/index.js",
@@ -29,9 +29,9 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.1 <5.0.0",
-    "@deepseek-ai/dsh-host-webserver": "0.1.5-rc.1 || 0.1.5-rc.2 || 0.1.5-rc.3 || 0.1.7-rc.1 || 0.1.7-rc.2 || ^0.2.0-rc.1",
-    "@deepseek-ai/dsh-settings": "0.1.5-rc.1 || 0.1.5-rc.2 || 0.1.5-rc.3 || 0.1.7-rc.1 || 0.1.7-rc.2 || ^0.2.0-rc.1",
-    "@deepseek-ai/dsh-storage-domain": "0.1.5-rc.1 || 0.1.5-rc.2 || 0.1.5-rc.3 || 0.1.7-rc.1 || 0.1.7-rc.2 || ^0.2.0-rc.1",
+    "@deepseek-ai/dsh-host-webserver": "0.1.5-rc.1 || 0.1.5-rc.2 || 0.1.5-rc.3 || 0.1.7-rc.1 || 0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.1-rc.1",
+    "@deepseek-ai/dsh-settings": "0.1.5-rc.1 || 0.1.5-rc.2 || 0.1.5-rc.3 || 0.1.7-rc.1 || 0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.1-rc.1",
+    "@deepseek-ai/dsh-storage-domain": "0.1.5-rc.1 || 0.1.5-rc.2 || 0.1.5-rc.3 || 0.1.7-rc.1 || 0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.1-rc.1",
     "@deepseek-ai/schemastery": ">=3.18.1 <4.0.0",
     "zod": "^4.4.3"
   },
@@ -77,13 +77,15 @@
   },
   "packageManager": "pnpm@11.8.0",
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-storage-domain": "^0.2.0-rc.1",
-    "@deepseek-ai/schemastery": "^3.18.4",
-    "@types/node": "^26.6.1",
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/dsh-host-webserver": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-settings": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-storage-domain": "^0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.5",
+    "@types/node": "^26.6.5",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
     "vite": "^8.3.0",
-    "zod": "^4.4.3"
+    "zod": "^4.6.7"
   }
 }
