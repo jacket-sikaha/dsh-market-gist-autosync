@@ -2,7 +2,7 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [0.1.10] - 待发布
+## [0.1.10] - 2026-10-19
 
 ### 变更
 
@@ -136,6 +136,7 @@
 - 严格备份结构校验（格式、路径安全、无重复路径），上限 256 文件 / 1MB。
 - 设置页 UI：Token 独立保存、测试连接、立即备份、恢复进度、上传记录（最近 20 条）、浮动 toast 提示。
 
+[0.1.10]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.8...v0.1.9
 [0.1.3]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.1...v0.1.2
