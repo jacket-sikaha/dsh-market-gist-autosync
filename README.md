@@ -44,7 +44,9 @@ dsh plugin --profile web add dsh-market-gist-autosync       # 网页版（dsh we
 
 ## 备份内容
 
-当前 profile 目录下所有配置文件，排除：`node_modules`、`.dsh-market`、`.git`、`*.bak`、符号链接，以及 `pnpm-lock.yaml`（可用 `includeLock` 勾选包含，约 115KB）。
+当前 profile 目录下所有配置文件，排除：`node_modules`、`.dsh-market`、`.git`、`pnpm-lock.yaml`、`*.bak` 和符号链接。这份排除清单与 dshmarket 的 `SKIP_NAMES` 完全一致，所以两边产出的备份可以互认、互相恢复。
+
+`pnpm-lock.yaml` 不备份：lockfile 钉死的是某一台机器解析出来的依赖树，恢复时 `pnpm install` 会按 `package.json` 重新生成它，把它搬到对端只会和安装过程打架。早期版本有一个「同时备份 lockfile」开关，已随此次对齐移除。
 
 - `package.json` 以 JSON 对象形式存储，其余文件以行数组形式存储
 - 打包为 `dsh-profile-backup.json`（`format: "dsh-profile-backup"`, `version: 0.2`），上传前做与 dshmarket 对齐的严格结构校验
@@ -88,19 +90,22 @@ dsh 启动加载器按 `dsh.profile.bundles` 的顺序加载插件，**遇到第
 | `scheduleEnabled` | `false` | 是否定时备份（仅 DSH 运行期间执行） |
 | `scheduleIntervalValue` | `24` | 周期间隔数值（≥1） |
 | `scheduleIntervalUnit` | `"hour"` | 周期单位：`"hour"` / `"minute"` |
-| `includeLock` | `false` | 同时备份 `pnpm-lock.yaml`（精确复现依赖版本） |
+
+备份内容的排除清单不可配置（与 dshmarket 的 `SKIP_NAMES` 保持一致）；旧版本 `config.json` 里残留的 `includeLock` 字段会在读取时被丢弃。
 
 ## 恢复
 
 设置页「恢复」区输入 Gist id 或 URL（留空用已保存的 gistId）：
 
-1. 下载并严格校验备份结构（格式、路径安全、无重复路径）
-2. 原子写回：先写临时文件再替换，任一文件失败则回滚全部
+1. 下载并严格校验备份结构：`format` 必须是 `dsh-profile-backup`、`version` 必须是 `0.2`、必须含 `package.json`、路径安全（非绝对、无 `..`、不含排除目录、无重复）、总大小 ≤ 2 MB
+2. 原子写回：先写临时文件再替换，任一文件失败则回滚全部。中间目录逐段创建，每段都必须是真实目录 —— 父目录是符号链接/目录联接时拒绝写入，避免文件被引到 profile 之外
 3. 合并 `package.json` 依赖（保留已装插件；`bundles` 取并集）
 4. 剔除指向本机不存在路径的 `link:` / `file:` 本地依赖（无法安装，留着会连累引用它的 bundle）
 5. 自动 `pnpm install` 缺失依赖（实时进度）；全部失败则回滚恢复
 6. **启动预检**：仍无法解析、或补丁缺失/损坏的 bundle 从 profile 移除并在界面报告
 7. 重启 DSH 后生效
+
+> 为什么第 1 步要卡这么死：备份来自另一台机器、也可能来自别的工具。少了 `package.json` 的备份能「恢复成功」，但插件一个都装不回来；而不是本插件的 JSON 被当成合法备份写进 profile，问题会拖到重启才以别的形式爆出来。宁可现在报错，也不要把坏数据落到磁盘上。
 
 > 为什么需要第 4、6 步：dsh 启动加载器读取 `dsh.profile.bundles` 时，**遇到第一个无法解析的包名就会整个 profile 启动失败**，而且要到**下一次重启**才暴露 —— 错误信息与导致它的恢复操作毫无关联，用户只能进恢复模式自救。备份来自另一台机器时（`link:` 依赖指向对方磁盘路径）这种情况很常见，所以恢复流程必须主动清理，而不是「恢复成功、重启崩溃」。
 
@@ -119,9 +124,10 @@ pnpm build   # Vite 8 (rolldown) 把 host 半打包为单文件 ESM 到 lib/
 | `smoke-apply.mjs` | 真实 cordis apply + RPC handler 级端到端验证 |
 | `itest-compat.mjs` | 备份格式与 dshmarket 恢复完全兼容 |
 | `itest-restore.mjs` | 合并恢复语义（现有插件被保留） |
+| `itest-restore-safety.mjs` | 恢复不穿过符号链接/目录联接写到 profile 之外；`..` 逃逸、目录占在文件位被拒 |
 | `itest-install-safety.mjs` | 恢复后已安装插件不丢失 |
 | `itest-module-resolution.mjs` | 打包产物模块解析 |
-| `itest-strict-validation.mjs` | 严格校验拒绝非法备份 |
+| `itest-strict-validation.mjs` | 严格校验拒绝非法备份：格式名、版本、缺 `package.json`、2 MB 上限等 19 个用例 |
 | `itest-storage.mjs` | 上传记录 dsh-storage 域读写/迁移 |
 | `itest-profile-detect.mjs` | 当前 profile 识别（desktopProfiles / argv / env / 兜底） |
 | `itest-boot-check.mjs` | 启动预检：无法解析、补丁缺失/损坏的 bundle 被捕获并移除；`!!js` 补丁不被误判；「未知」不被当成「缺失」 |

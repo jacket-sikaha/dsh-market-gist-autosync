@@ -11,6 +11,23 @@ export declare const GIST_TOKEN_ENV = "DSH_GITHUB_TOKEN";
 export declare const BACKUP_FORMAT = "dsh-profile-backup";
 export declare const BACKUP_VERSION = 0.2;
 export declare const MAX_BACKUP_FILES = 256;
+/**
+ * Whole-backup ceiling, enforced on restore. Deliberately looser than
+ * GIST_MAX_BYTES (1MB) — that one is GitHub's upload limit, while this one only
+ * exists so a corrupt or hostile backup cannot make restore buffer something
+ * absurd before it is rejected.
+ */
+export declare const MAX_BACKUP_BYTES: number;
+/**
+ * Names that never appear in a profile backup. Kept identical to dshmarket's
+ * SKIP_NAMES so the two tools accept each other's backups: upstream rejects any
+ * path touching these names as an "excluded backup path", so a backup that
+ * carried one could be written here but never restored there.
+ *
+ * pnpm-lock.yaml is on the list because a lockfile pins one machine's resolved
+ * tree and registry; `pnpm install` rebuilds it correctly on the restoring
+ * machine, so shipping it only fights the install instead of helping it.
+ */
 export declare const PROFILE_SKIP: Set<string>;
 export declare const MAX_UPLOAD_RECORDS = 20;
 export declare function initProfileContext(ctx: {
@@ -59,8 +76,6 @@ export interface GistBackupConfig {
     /** Schedule interval magnitude + unit (minute-granularity). */
     scheduleIntervalValue: number;
     scheduleIntervalUnit: 'minute' | 'hour';
-    /** Optional extras to fold into the backup beyond the dshmarket core set. */
-    includeLock: boolean;
     uploads: UploadRecord[];
 }
 export declare const DEFAULTS: GistBackupConfig;

@@ -223,7 +223,6 @@ window.__ModuleLoader__.load({
         scheduleEnabled: false,
         scheduleIntervalValue: "24",
         scheduleIntervalUnit: "hour",
-        includeLock: false,
         uploads: [],
         envTokenSet: false,
         activeProfile: "desktop",
@@ -261,7 +260,6 @@ window.__ModuleLoader__.load({
                 scheduleIntervalValue: String(c.scheduleIntervalValue || 24),
                 scheduleIntervalUnit:
                   c.scheduleIntervalUnit === "minute" ? "minute" : "hour",
-                includeLock: !!c.includeLock,
                 uploads: Array.isArray(c.uploads) ? c.uploads : [],
                 envTokenSet: !!r.envTokenSet,
                 activeProfile: r.activeProfile || "desktop",
@@ -271,7 +269,6 @@ window.__ModuleLoader__.load({
                 baseline: {
                   gistToken: c.gistToken || "",
                   gistId: c.gistId || "",
-                  includeLock: !!c.includeLock,
                   scheduleEnabled: !!c.scheduleEnabled,
                   scheduleIntervalValue: String(c.scheduleIntervalValue || 24),
                   scheduleIntervalUnit:
@@ -357,7 +354,6 @@ window.__ModuleLoader__.load({
             scheduleIntervalValue:
               parseInt(state[0].scheduleIntervalValue, 10) || 24,
             scheduleIntervalUnit: state[0].scheduleIntervalUnit,
-            includeLock: state[0].includeLock,
           },
         })
           .then(function (r) {
@@ -370,7 +366,6 @@ window.__ModuleLoader__.load({
                   scheduleEnabled: state[0].scheduleEnabled,
                   scheduleIntervalValue: String(state[0].scheduleIntervalValue),
                   scheduleIntervalUnit: state[0].scheduleIntervalUnit,
-                  includeLock: state[0].includeLock,
                 }),
               });
             }
@@ -526,10 +521,7 @@ window.__ModuleLoader__.load({
 
       // 未保存修改检测：当前值与 baseline（上次保存/加载时的快照）对比
       var b = s.baseline || {};
-      var varsDirty =
-        s.gistToken !== b.gistToken ||
-        s.gistId !== b.gistId ||
-        s.includeLock !== b.includeLock;
+      var varsDirty = s.gistToken !== b.gistToken || s.gistId !== b.gistId;
       var schedDirty =
         s.scheduleEnabled !== b.scheduleEnabled ||
         String(s.scheduleIntervalValue) !== String(b.scheduleIntervalValue) ||
@@ -719,13 +711,21 @@ window.__ModuleLoader__.load({
           },
           hint: "新建成功后会自动把 gist id 存回这里",
         }),
-        React.createElement(Toggle, {
-          label: "同时备份 pnpm-lock.yaml（精确复现依赖版本，约 115KB）",
-          value: s.includeLock,
-          onChange: function (v) {
-            setState({ includeLock: v });
+        // 不备份 pnpm-lock.yaml（与 dshmarket 一致）：恢复时 pnpm install 会按
+        // package.json 重新生成它。原先的「同时备份 lockfile」开关因此移除，
+        // 改为把排除清单直接写出来，免得用户猜备份里到底有什么。
+        React.createElement(
+          "p",
+          {
+            style: {
+              margin: "0 0 4px",
+              fontSize: 11,
+              color: "#8b93a1",
+              lineHeight: 1.7,
+            },
           },
-        }),
+          "备份内容：profile 目录下除 node_modules、.dsh-market、.git、pnpm-lock.yaml、*.bak 和符号链接之外的全部文件。pnpm-lock.yaml 不备份 —— 恢复时 pnpm install 会按 package.json 重新生成，带上旧 lockfile 反而会把当前机器的依赖树搬到别处。",
+        ),
 
         // ===== 执行 =====
         React.createElement(SectionTitle, { dirty: schedDirty }, "执行"),

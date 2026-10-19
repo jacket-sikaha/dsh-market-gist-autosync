@@ -84,7 +84,7 @@ export async function doBackup(
   let strippedDeps: UnportableDep[] = []
   let strippedBundles: string[] = []
   try {
-    const collected = collectProfileBackup(cfg.includeLock)
+    const collected = collectProfileBackup()
     files = collected.files
     containsSecrets = collected.containsSecrets
     strippedDeps = collected.strippedDeps

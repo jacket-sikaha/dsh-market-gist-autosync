@@ -381,7 +381,6 @@ async function apply(ctx: any, rawConfig: any) {
           );
           cfg.scheduleIntervalUnit =
             cfg.scheduleIntervalUnit === "minute" ? "minute" : "hour";
-          cfg.includeLock = Boolean(cfg.includeLock);
           writeBackupConfig(cfg);
           schedule(cfg);
           sendJson(response, 200, { ok: true, config: cfg });

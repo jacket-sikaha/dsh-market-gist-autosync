@@ -61,16 +61,20 @@ export interface CollectResult {
     /** Bundle rows dropped with them (a row with no installable package). */
     strippedBundles: string[];
 }
-export declare function collectProfileBackup(includeLock: boolean): CollectResult;
+export declare function collectProfileBackup(): CollectResult;
 /** Serialize the backup with 2-space indent so it reads well on the Gist web UI. */
 export declare function serializeBackup(backup: unknown): string;
 export declare function buildBackupEnvelope(files: FileEntry[]): ParsedBackup;
 /**
  * Strict structural validation aligned with dshmarket's validatedBackup:
- * - format is a string, files is an array
- * - path is non-empty, not absolute, no `..` segments
- * - no SKIP_NAMES segments, no duplicate paths
- * - package.json (if present as json) must be a plain object; lines must be strings
- * Returns an error message, or null when valid.
+ * - format is exactly BACKUP_FORMAT and version exactly BACKUP_VERSION
+ * - files is an array of at most MAX_BACKUP_FILES entries
+ * - path is non-empty, not absolute, no `..` segments, no PROFILE_SKIP segments,
+ *   no duplicates
+ * - package.json is REQUIRED and must be a json object; every other entry must
+ *   be `lines` of strings
+ * - the whole backup stays under MAX_BACKUP_BYTES
+ * Returns an error message phrased as what happened / why / what to do next, or
+ * null when valid.
  */
 export declare function validateBackupStrict(value: unknown): string | null;

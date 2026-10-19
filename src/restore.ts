@@ -10,10 +10,11 @@ import {
   mkdirSync,
   writeFileSync,
   lstatSync,
+  realpathSync,
   renameSync,
   rmSync,
 } from 'node:fs'
-import { resolve, dirname, sep } from 'node:path'
+import { resolve, dirname, sep, relative, isAbsolute } from 'node:path'
 import type { FileEntry, ParsedBackup } from './backup.js'
 
 export function entryContent(file: FileEntry): string {
@@ -62,6 +63,68 @@ export interface RestoreResult {
   rollback?: () => void
 }
 
+/**
+ * Resolve a path the way the filesystem actually routes writes.
+ *
+ * `realpathSync` (the JavaScript implementation) does NOT resolve Windows
+ * junctions; `realpathSync.native` does. A junction is exactly the case where
+ * lstat misleads us, so the native resolution is the one that matters here.
+ */
+function realPath(p: string): string {
+  const native = realpathSync.native as typeof realpathSync | undefined
+  return typeof native === 'function' ? native(p) : realpathSync(p)
+}
+
+/**
+ * Create the parent directories of a restore target one segment at a time,
+ * refusing anything that is not a plain directory (aligned with dshmarket's
+ * `ensureSafeParent`).
+ *
+ * `mkdirSync(dir, { recursive: true })` follows symlinks, and that is the one
+ * escape the per-path `startsWith(root)` check cannot see: the backup only names
+ * a relative path (`dsh/plugins/x.json`), while the escape happens on the disk
+ * side — if `dsh` already exists as a link to somewhere else, a recursive mkdir
+ * walks through it and the file lands outside the profile.
+ */
+function ensureSafeParent(root: string, parent: string, filePath: string): void {
+  const rel = relative(root, parent)
+  if (rel === '' || rel === '.') return
+  if (rel.startsWith('..') || isAbsolute(rel)) throw new Error(`不安全的备份路径: ${filePath}`)
+  let realRoot: string
+  try {
+    realRoot = realPath(root)
+  } catch {
+    realRoot = root
+  }
+  let current = root
+  for (const part of rel.split(sep)) {
+    if (part === '' || part === '.') continue
+    current = resolve(current, part)
+    let stat
+    try {
+      stat = lstatSync(current)
+    } catch {
+      // Missing — create exactly this level, so the next segment is checked too.
+      mkdirSync(current)
+      continue
+    }
+    if (stat.isSymbolicLink()) throw new Error(`恢复目标的上层是符号链接，拒绝穿过它写入: ${filePath}`)
+    if (!stat.isDirectory()) throw new Error(`恢复目标的上层不是目录: ${filePath}`)
+    // lstat does NOT report every redirecting filesystem object as a symlink:
+    // Windows junctions and directory mounts come back as plain directories, yet
+    // writes go through them. Only the real path proves where the bytes land.
+    let real: string
+    try {
+      real = realPath(current)
+    } catch {
+      throw new Error(`恢复目标的上层无法解析: ${filePath}`)
+    }
+    if (real !== realRoot && !real.startsWith(realRoot + sep)) {
+      throw new Error(`恢复目标的上层指向 profile 之外（符号链接或联接点），拒绝写入: ${filePath}`)
+    }
+  }
+}
+
 export function restoreBackup(root: string, backup: ParsedBackup): RestoreResult {
   const previous = new Map<string, Buffer | null>()
   let rolledBack = false
@@ -78,13 +141,17 @@ export function restoreBackup(root: string, backup: ParsedBackup): RestoreResult
   let mergedManifest = false
   const resolvedRoot = resolve(root)
   try {
+    // The profile may not exist yet (fresh install, restoring into a new
+    // profile); create it here so every path below resolves under a root that
+    // provably exists as a real directory.
+    mkdirSync(resolvedRoot, { recursive: true })
     for (const file of backup.files) {
       const target = resolve(resolvedRoot, file.path)
       if (target !== resolvedRoot && !target.startsWith(resolvedRoot + sep)) {
         throw new Error(`不安全的备份路径: ${file.path}`)
       }
       if (existsSync(target) && !lstatSync(target).isFile()) throw new Error(`目标不是普通文件: ${file.path}`)
-      mkdirSync(dirname(target), { recursive: true })
+      ensureSafeParent(resolvedRoot, dirname(target), file.path)
       previous.set(target, existsSync(target) ? readFileSync(target) : null)
 
       let content: string

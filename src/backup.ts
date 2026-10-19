@@ -9,6 +9,7 @@ import { resolve, isAbsolute, sep } from 'node:path'
 import {
   BACKUP_FORMAT,
   BACKUP_VERSION,
+  MAX_BACKUP_BYTES,
   MAX_BACKUP_FILES,
   PROFILE_SKIP,
   activeProfile,
@@ -125,7 +126,6 @@ export interface ParsedBackup {
 function profileFiles(root: string, dir: string, out: string[]): void {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (PROFILE_SKIP.has(entry.name) || /\.bak\b/.test(entry.name)) continue
-    if (entry.name === 'pnpm-lock.yaml') continue
     const abs = resolve(dir, entry.name)
     if (entry.isSymbolicLink()) continue
     if (entry.isDirectory()) profileFiles(root, abs, out)
@@ -143,13 +143,12 @@ export interface CollectResult {
   strippedBundles: string[]
 }
 
-export function collectProfileBackup(includeLock: boolean): CollectResult {
+export function collectProfileBackup(): CollectResult {
   const root = resolve(profileRoot())
   const manifestFile = resolve(root, 'package.json')
   if (!existsSync(manifestFile)) throw new Error('profile package.json is missing')
   const relPaths: string[] = []
   profileFiles(root, root, relPaths)
-  if (includeLock && existsSync(resolve(root, 'pnpm-lock.yaml'))) relPaths.push('pnpm-lock.yaml')
   let strippedDeps: UnportableDep[] = []
   let strippedBundles: string[] = []
   const files: FileEntry[] = relPaths.sort().map((path) => {
@@ -184,36 +183,62 @@ export function buildBackupEnvelope(files: FileEntry[]): ParsedBackup {
 
 /**
  * Strict structural validation aligned with dshmarket's validatedBackup:
- * - format is a string, files is an array
- * - path is non-empty, not absolute, no `..` segments
- * - no SKIP_NAMES segments, no duplicate paths
- * - package.json (if present as json) must be a plain object; lines must be strings
- * Returns an error message, or null when valid.
+ * - format is exactly BACKUP_FORMAT and version exactly BACKUP_VERSION
+ * - files is an array of at most MAX_BACKUP_FILES entries
+ * - path is non-empty, not absolute, no `..` segments, no PROFILE_SKIP segments,
+ *   no duplicates
+ * - package.json is REQUIRED and must be a json object; every other entry must
+ *   be `lines` of strings
+ * - the whole backup stays under MAX_BACKUP_BYTES
+ * Returns an error message phrased as what happened / why / what to do next, or
+ * null when valid.
  */
 export function validateBackupStrict(value: unknown): string | null {
   if (value === null || typeof value !== 'object') return '备份不是对象'
   const b = value as { format?: unknown; version?: unknown; files?: unknown }
-  if (typeof b.format !== 'string' || b.format === '') return '缺少 format 字段'
+  // Identity first: a backup from another tool (or another plugin version) can
+  // satisfy every structural rule below while meaning something else entirely.
+  if (b.format !== BACKUP_FORMAT)
+    return `这不是本插件的备份：format 是 ${JSON.stringify(b.format) ?? '缺失'}，应为 "${BACKUP_FORMAT}"。请确认这个 Gist 里存的是 profile 备份。`
+  if (b.version !== BACKUP_VERSION)
+    return `备份版本不受支持：version 是 ${JSON.stringify(b.version) ?? '缺失'}，本版只认 ${BACKUP_VERSION}。请把插件升级到写下这份备份的版本再恢复。`
   if (!Array.isArray(b.files)) return '缺少 files 数组'
   if (b.files.length > MAX_BACKUP_FILES) return `备份文件过多（>${MAX_BACKUP_FILES}）`
 
   const paths = new Set<string>()
+  let hasManifest = false
   for (const f of b.files) {
     if (f === null || typeof f !== 'object') return 'files 含非对象项'
     const file = f as { path?: unknown; json?: unknown; lines?: unknown }
     if (typeof file.path !== 'string' || file.path === '') return 'files 含无 path 项'
     if (isAbsolute(file.path) || file.path.split(/[\\/]/).includes('..')) return `不安全的备份路径: ${file.path}`
     const normalized = file.path.replaceAll('\\', '/')
-    if (normalized.split('/').some((part) => PROFILE_SKIP.has(part))) return `含被排除的路径: ${file.path}`
+    if (normalized.split('/').some((part) => PROFILE_SKIP.has(part)))
+      return `备份里含不该出现的路径 ${file.path}（node_modules、.dsh-market、.git、pnpm-lock.yaml 都不参与备份）。请用新版重新备份一份再恢复。`
     if (paths.has(normalized)) return `重复的备份路径: ${file.path}`
     paths.add(normalized)
-    const hasJson = file.json !== undefined
-    const hasLines = Array.isArray(file.lines)
-    if (!hasJson && !hasLines) return `文件既无 json 也无 lines: ${file.path}`
-    if (file.path === 'package.json' && hasJson) {
-      if (file.json === null || typeof file.json !== 'object' || Array.isArray(file.json)) return 'package.json 的 json 不是对象'
+    if (normalized === 'package.json') {
+      hasManifest = true
+      // The manifest decides what gets installed, so it must be a real object —
+      // a line array would be written verbatim and produce an unparseable file.
+      if (file.json === null || typeof file.json !== 'object' || Array.isArray(file.json))
+        return 'package.json 必须是 json 对象（不是行数组）'
+      continue
     }
-    if (hasLines && !(file.lines as unknown[]).every((l) => typeof l === 'string')) return `lines 含非字符串: ${file.path}`
+    if (!Array.isArray(file.lines)) return `${file.path} 必须是行数组（只有 package.json 用 json）`
+    if (!(file.lines as unknown[]).every((l) => typeof l === 'string')) return `lines 含非字符串: ${file.path}`
   }
+  // Without a manifest there is nothing to merge and nothing to install from:
+  // such a backup would restore stray files and change no plugin at all.
+  if (!hasManifest)
+    return '备份里没有 package.json —— 恢复要靠它决定装哪些插件，请用能导出清单的版本重新备份。'
+  let bytes = 0
+  try {
+    bytes = Buffer.byteLength(JSON.stringify(value), 'utf8')
+  } catch {
+    return '备份无法序列化，内容可能损坏'
+  }
+  if (bytes > MAX_BACKUP_BYTES)
+    return `备份过大（${(bytes / 1024 / 1024).toFixed(1)} MB，上限 ${MAX_BACKUP_BYTES / 1024 / 1024} MB）：恢复会先把它整个读进内存，超过上限一律拒绝。`
   return null
 }

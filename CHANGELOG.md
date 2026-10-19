@@ -2,6 +2,24 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.10] - 待发布
+
+### 变更
+
+- **排除清单与 dshmarket 对齐，不再备份 `pnpm-lock.yaml`**：`PROFILE_SKIP` 加入 `pnpm-lock.yaml`，与上游 `SKIP_NAMES` 逐项一致。此前 `includeLock: true` 产出的备份含该文件，上游 `validatedBackup` 会判为 `excluded backup path` 直接拒收 —— 那份备份能从这里上传，却无法在插件市场恢复。lockfile 钉死的是某一台机器解析出的依赖树，恢复时 `pnpm install` 会按 `package.json` 重新生成，搬过去只会和安装过程打架。
+- **移除 `includeLock` 开关**：`GistBackupConfig` 删掉该字段，`collectProfileBackup()` 不再收参数，host 端 `saveConfig` 不再归一化它；旧 `config.json` 里的残留字段在读取时丢弃，不会随每次保存继续流传。
+- **旧备份的报错改成可操作**：恢复一份带 `pnpm-lock.yaml` 的历史备份时，校验失败信息从「含被排除的路径」改为说明哪些名字不参与备份、并要求用新版重新备份 —— 否则用户只会看到一个莫名的路径名。
+
+### 修复
+
+- **校验放过了「不是本插件的备份」**：`validateBackupStrict` 此前只要求 `format` 是非空字符串，任何格式名都能通过，既不比对 `version`、也不要求含 `package.json`、也不限总大小。现在与 dshmarket 的 `validatedBackup` 逐条对齐：`format` 必须是 `dsh-profile-backup`、`version` 必须是 `0.2`、必须有一份 `package.json`（只有它用 `json`，其余文件必须给 `lines`）、总大小上限 2 MB。其中影响最大的是「没有 package.json 也能恢复」—— 恢复要靠它决定装哪些插件，缺这一项会变成「恢复成功，但插件一个都没回来」，而用户看不出哪里不对。
+- **恢复会穿过符号链接写到 profile 之外**（严重）：此前建父目录用 `mkdirSync(dirname, { recursive: true })`，路径上的中间层一概不检查。备份里一条 `dsh/plugins/x.json`，只要 `dsh` 是指向 profile 外部的链接，文件就落到外部去了。现在按 dshmarket 的 `ensureSafeParent` 方式逐段建目录，每段都必须是真实目录；另外补了一条 `realpathSync.native` 的真实路径比对 —— Windows 目录联接（junction）的 `lstat` 会报「普通目录、非符号链接」，只照抄上游那套 `lstat` 检查在本机实测仍被穿过（文件确实写到了 profile 外），只有解析真实路径才拦得住。
+- **新增 `scripts/itest-restore-safety.mjs`**：覆盖链接父目录被拒、`..` 逃逸被拒、目录挡在文件位被拒、正常嵌套路径仍能建目录写入。`itest-strict-validation.mjs` 同步扩到 19 个用例（格式名、版本、缺 package.json、2 MB 上限等），其旧用例的 `format: 'x'` 夹具在新契约下会先被格式门槛拦下，已改为合法信封再逐条断言各条规则。
+
+### 界面
+
+- 「备份变量设置」里的「同时备份 pnpm-lock.yaml（约 115KB）」开关移除，改为一行灰字列出备份内容与完整的排除清单。开关没了，用户仍能一眼看到备份里有什么、为什么不含 lockfile。
+
 ## [0.1.9] - 2026-10-05
 
 ### 变更

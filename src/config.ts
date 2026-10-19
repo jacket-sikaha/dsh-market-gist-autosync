@@ -46,7 +46,24 @@ export const GIST_TOKEN_ENV = 'DSH_GITHUB_TOKEN'
 export const BACKUP_FORMAT = 'dsh-profile-backup'
 export const BACKUP_VERSION = 0.2
 export const MAX_BACKUP_FILES = 256
-export const PROFILE_SKIP = new Set(['node_modules', '.dsh-market', '.git'])
+/**
+ * Whole-backup ceiling, enforced on restore. Deliberately looser than
+ * GIST_MAX_BYTES (1MB) — that one is GitHub's upload limit, while this one only
+ * exists so a corrupt or hostile backup cannot make restore buffer something
+ * absurd before it is rejected.
+ */
+export const MAX_BACKUP_BYTES = 2 * 1024 * 1024
+/**
+ * Names that never appear in a profile backup. Kept identical to dshmarket's
+ * SKIP_NAMES so the two tools accept each other's backups: upstream rejects any
+ * path touching these names as an "excluded backup path", so a backup that
+ * carried one could be written here but never restored there.
+ *
+ * pnpm-lock.yaml is on the list because a lockfile pins one machine's resolved
+ * tree and registry; `pnpm install` rebuilds it correctly on the restoring
+ * machine, so shipping it only fights the install instead of helping it.
+ */
+export const PROFILE_SKIP = new Set(['node_modules', '.dsh-market', '.git', 'pnpm-lock.yaml'])
 export const MAX_UPLOAD_RECORDS = 20
 
 /**
@@ -135,8 +152,6 @@ export interface GistBackupConfig {
   /** Schedule interval magnitude + unit (minute-granularity). */
   scheduleIntervalValue: number
   scheduleIntervalUnit: 'minute' | 'hour'
-  /** Optional extras to fold into the backup beyond the dshmarket core set. */
-  includeLock: boolean
   uploads: UploadRecord[]
 }
 
@@ -147,7 +162,6 @@ export const DEFAULTS: GistBackupConfig = {
   scheduleEnabled: false,
   scheduleIntervalValue: 24,
   scheduleIntervalUnit: 'hour',
-  includeLock: false,
   uploads: [],
 }
 
@@ -182,6 +196,10 @@ export function readBackupConfig(): GistBackupConfig {
     if (parsed && typeof parsed === 'object') {
       const cfg = { ...DEFAULTS, ...parsed } as GistBackupConfig
       if (!Array.isArray(cfg.uploads)) cfg.uploads = []
+      // `includeLock` disappeared when pnpm-lock.yaml joined PROFILE_SKIP. Drop
+      // any leftover field from an older config.json so it cannot ride along on
+      // every save and imply a setting that no longer exists.
+      delete (cfg as GistBackupConfig & { includeLock?: unknown }).includeLock
       return cfg
     }
   } catch {
