@@ -8,3 +8,4 @@ debug.log
 .submit/
 docs/
 dsh-market/
+.git-msg.tmp
