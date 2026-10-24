@@ -22,9 +22,16 @@ export interface PnpmResult {
   spawnError?: string
 }
 
+/** Per-line stderr streaming, so callers can turn pnpm's progress reporter into
+ * UI counters while the install is still running. */
+export interface SpawnHooks {
+  /** Called once per complete stderr line, in arrival order. */
+  onStderrLine?: (line: string) => void
+}
+
 /** Spawn a command. Windows `.cmd` shims (pnpm) cannot start without a shell,
  * so route through cmd.exe /d /s /c with an explicitly quoted command line. */
-export function spawnCmd(file: string, args: string[], cwd: string): Promise<PnpmResult> {
+export function spawnCmd(file: string, args: string[], cwd: string, hooks?: SpawnHooks): Promise<PnpmResult> {
   return new Promise((resolvePromise) => {
     const quote = (a: string) => (/[\s"&|<>^()%!]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a)
     const isWin = process.platform === 'win32'
@@ -38,10 +45,61 @@ export function spawnCmd(file: string, args: string[], cwd: string): Promise<Pnp
       return
     }
     let stderr = ''
-    child.stderr?.on('data', (c: Buffer) => { stderr += c.toString('utf8') })
+    let pending = ''
+    const feed = (chunk: string): void => {
+      const onLine = hooks?.onStderrLine
+      if (!onLine) return
+      pending += chunk
+      let breakAt = pending.indexOf('\n')
+      while (breakAt >= 0) {
+        const line = pending.slice(0, breakAt).replace(/\r$/, '')
+        pending = pending.slice(breakAt + 1)
+        if (line.trim() !== '') {
+          try {
+            onLine(line)
+          } catch {
+            // A progress parser must never take the install down with it.
+          }
+        }
+        breakAt = pending.indexOf('\n')
+      }
+      // pnpm's in-place reporter can go a long time without a newline; do not
+      // let that grow without bound.
+      if (pending.length > 8192) pending = pending.slice(-2048)
+    }
+    // Which stream carries the reporter varies by pnpm version and reporter
+    // choice, so parse both; only stderr is kept as the failure text.
+    child.stdout?.on('data', (c: Buffer) => feed(c.toString('utf8')))
+    child.stderr?.on('data', (c: Buffer) => {
+      const chunk = c.toString('utf8')
+      stderr += chunk
+      feed(chunk)
+    })
     child.on('error', (e) => resolvePromise({ exitCode: 1, stderr, spawnError: e.message }))
     child.on('close', (code) => resolvePromise({ exitCode: code ?? 1, stderr }))
   })
+}
+
+/** pnpm's `Progress:` reporter line, e.g.
+ *  `Progress: resolved 390, reused 17, downloaded 0, added 1, done`. */
+const PROGRESS_LINE = /resolved (\d+), reused (\d+), downloaded \d+, added (\d+)/
+
+/** Package counts lifted out of that line. The unit is packages, NOT plugins —
+ *  one plugin can pull dozens — so the UI shows them as counters instead of
+ *  turning them into a percentage. */
+export interface InstallCounters {
+  resolved: number
+  reused: number
+  added: number
+}
+
+/** Last meaningful stderr lines, for showing why an install failed. */
+function tailLines(stderr: string, limit = 12): string[] {
+  const kept = stderr
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !/^Progress:/.test(line) && !/^Packages:/.test(line))
+  return kept.slice(-limit)
 }
 
 /**
@@ -74,6 +132,7 @@ function pruneDependency(manifestFile: string, name: string): boolean {
 export type InstallProgress =
   | { phase: 'probe'; missing: string[] }
   | { phase: 'install-all' }
+  | { phase: 'install-count'; resolved: number; reused: number; added: number }
   | { phase: 'install-one'; name: string; index: number; total: number }
   | { phase: 'done-one'; name: string; ok: boolean }
 
@@ -87,6 +146,8 @@ export interface InstallOutcome {
   installedNames: string[]
   /** Names that failed and were pruned from the manifest. */
   prunedNames: string[]
+  /** Tail of pnpm's own output when the install failed; empty on success. */
+  stderrTail?: string[]
 }
 
 export async function installRestoredDeps(
@@ -169,8 +230,31 @@ export async function installRestoredDeps(
   // never carries pnpm-lock.yaml (PROFILE_SKIP drops it), so the profile's
   // existing lockfile always describes the OLD dependency set and every restore
   // would abort here with ERR_PNPM_OUTDATED_LOCKFILE before installing anything.
+  // Live package counts: pnpm prints `Progress: resolved N, reused N, ...` on
+  // its reporter stream while it works. Piped through at most every 200 ms —
+  // and always for the final `done` line — so the RPC state does not churn.
+  let lastCountEmit = 0
+  const counterFeed = (line: string): void => {
+    const match = PROGRESS_LINE.exec(line)
+    if (!match) return
+    const now = Date.now()
+    if (now - lastCountEmit < 200 && !/\bdone\b/.test(line)) return
+    lastCountEmit = now
+    onProgress?.({
+      phase: 'install-count',
+      resolved: Number(match[1]),
+      reused: Number(match[2]),
+      added: Number(match[3]),
+    })
+  }
+
   onProgress?.({ phase: 'install-all' })
-  const install = await spawnCmd('pnpm', ['install', '--no-frozen-lockfile', '--config.auto-install-peers=false'], root)
+  const install = await spawnCmd(
+    'pnpm',
+    ['install', '--no-frozen-lockfile', '--config.auto-install-peers=false', '--reporter=append-only'],
+    root,
+    { onStderrLine: counterFeed },
+  )
   if (install.exitCode === 0) {
     return { ok: true, installed: true, summary: `依赖安装完成（新装 ${missing.length} 个）`, installedNames: missing.map(([n]) => n), prunedNames: [] }
   }
@@ -193,6 +277,7 @@ export async function installRestoredDeps(
       summary: `恢复完成，但此环境无法自动安装依赖（${install.spawnError}）。${missing.length} 个插件需在重启后于插件市场确认/重装：${missing.map(([n]) => n).join('、')}。${removedNote}`,
       installedNames: [],
       prunedNames: [],
+      stderrTail: tailLines(install.stderr),
     }
   }
 
@@ -201,19 +286,31 @@ export async function installRestoredDeps(
   const failed: string[] = []
   const stuck: string[] = []
   const installedNames: string[] = []
+  // Only the last failure's output is worth showing; earlier ones are drowned.
+  let slowStderr = tailLines(install.stderr).join('\n')
   for (let i = 0; i < missing.length; i++) {
     const [name, spec] = missing[i]
     onProgress?.({ phase: 'install-one', name, index: i + 1, total: missing.length })
     const target = /^(?:github|git\+|https?):/.test(spec) ? spec : `${name}@${spec}`
-    const r = await spawnCmd('pnpm', ['add', target, '--config.auto-install-peers=false'], root)
+    const r = await spawnCmd('pnpm', ['add', target, '--config.auto-install-peers=false'], root, {
+      onStderrLine: counterFeed,
+    })
     const present = r.exitCode === 0 && existsSync(join(root, 'node_modules', name, 'package.json'))
     if (present) {
       installedNames.push(name)
       onProgress?.({ phase: 'done-one', name, ok: true })
     } else if (r.spawnError) {
       // spawn broke mid-way — stop pruning, report and bail
-      return { ok: true, installed: false, summary: `安装中断（${r.spawnError}）。请在重启后于插件市场确认依赖。`, installedNames, prunedNames: failed }
+      return {
+        ok: true,
+        installed: false,
+        summary: `安装中断（${r.spawnError}）。请在重启后于插件市场确认依赖。`,
+        installedNames,
+        prunedNames: failed,
+        stderrTail: [...tailLines(r.stderr), ...tailLines(slowStderr)].slice(-12),
+      }
     } else {
+      slowStderr = tailLines(r.stderr).join('\n')
       // Only a name the manifest actually lost is "pruned"; one that resisted
       // the rewrite stays declared and is reported separately, because the boot
       // pre-check will still find its bundle unresolvable.
@@ -235,6 +332,7 @@ export async function installRestoredDeps(
       summary: `已装 ${installedNames.length} 个${failed.length > 0 ? `，剔除装不上的：${failed.join('、')}（可在插件市场重装）` : ''}${stuckNote}`,
       installedNames,
       prunedNames: failed,
+      stderrTail: failed.length > 0 ? tailLines(slowStderr) : [],
     }
   }
   return {
@@ -245,5 +343,6 @@ export async function installRestoredDeps(
       : `依赖安装失败${stuckNote}。请在插件市场手动重装。`,
     installedNames,
     prunedNames: failed,
+    stderrTail: tailLines(slowStderr),
   }
 }

@@ -2,6 +2,30 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.0] - 2026-10-26
+
+这一版是小版本号而不是补丁号：`restoreProgress` 的返回结构从「文本行数组」换成了阶段状态机，属于对 RPC 契约的不兼容变更（`restore` 回包保留 `progressLines` 以兼容旧调用方）。备份格式没有变，与 dshmarket 仍然互认。
+
+### 新增
+
+- **恢复阶段视图**：恢复不再是「一行灰字加干等」。宿主维护一份阶段状态机（读取备份 → 格式校验 → 写入文件 → 依赖比对 → 安装依赖 → 启动自检），每段带状态、耗时与一句明细，`restoreProgress` 返回的是它而不是纯文本行。
+- **进度的真实数字**：下载完报字节数、校验完报文件数、写回报个数与跳过项、依赖比对报缺失插件清单；装依赖阶段解析 pnpm 的 `resolved / reused / added` 计数并流式上报，界面显示「已解析 N 个包（新增 M 个）」。
+- **`InstallOutcome` 带出 pnpm 报错尾部**（`stderrTail`）：恢复失败时界面能看到真正原因，而不是只有「安装失败」。
+- **恢复完成后的重启提示弹窗**：说明「已恢复 N 个文件到 profile「X」，安装 M 个插件，用时 T」，并提示需要重启 DSH 才生效。
+
+### 变更
+
+- `installRestoredDeps` 快路径改用 `--reporter=append-only`，`spawnCmd` 新增可选 `hooks` 参数把 stdout/stderr 按行喂给 `onStderrLine`；计数上报节流 200ms，安装结束那行总是上报。
+- 进度条不做百分比：`missing.length` 是插件数、pnpm 的 `resolved` 是包数，混算刻度会乱跳，所以用「不确定进度条 + 具体计数」。
+- 完成态与进行态区分：完成后收敛成一行汇总，细节收进「查看详情」，不再与 toast 重复。
+
+### 修复
+
+- 恢复失败时归因到**当时正在运行的那一段**，而不是整张卡片飘红；之后还没开始的阶段保持灰色，不会被误标成已完成。
+- 恢复过程中抛异常也会收尾进度状态（否则 `active` 永远为真，409「恢复进行中」再也解不开）。
+- 刷新页面后进度自动接回：挂载时查一次 `restoreProgress`，`active` 就继续轮询。
+- 同一插件的安装行原地替换，日志框自动滚到底 —— 慢路径恢复 30+ 插件时不再是几十行往下堆。
+
 ## [0.1.13] - 2026-10-25
 
 ### 变更
@@ -202,6 +226,8 @@
 - 严格备份结构校验（格式、路径安全、无重复路径），上限 256 文件 / 1MB。
 - 设置页 UI：Token 独立保存、测试连接、立即备份、恢复进度、上传记录（最近 20 条）、浮动 toast 提示。
 
+[0.2.0]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.13...v0.2.0
+[0.1.13]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.9...v0.1.10

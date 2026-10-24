@@ -6,7 +6,29 @@
  */
 import { type GistBackupConfig, type Result } from './config.js';
 import { type InstallProgress } from './install.js';
-export type ProgressFn = (p: InstallProgress) => void;
+/**
+ * Progress events a restore reports. The install phases come straight from
+ * install.ts; the rest are the boundaries the UI needs to switch stages on.
+ * Every event means "the previous stage finished": the UI derives stage
+ * transitions from arrival order instead of needing explicit start/stop pairs.
+ */
+export type RestoreProgressEvent = {
+    phase: 'fetch';
+} | {
+    phase: 'fetched';
+    bytes: number;
+} | {
+    phase: 'validated';
+    files: number;
+} | {
+    phase: 'written';
+    restored: number;
+    skipped: number;
+} | InstallProgress | {
+    phase: 'boot';
+    errors: number;
+};
+export type ProgressFn = (p: RestoreProgressEvent) => void;
 export declare function doTest(cfg: GistBackupConfig, host: string): Promise<Result>;
 /**
  * gistOverride: when provided (including the empty string), it is the source of

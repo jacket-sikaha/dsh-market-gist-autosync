@@ -16,7 +16,7 @@
 // The host package is a devDependency pinned to the DSH release line we claim to
 // support, so a breaking host change fails here rather than in the field.
 
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -196,6 +196,42 @@ try {
     'a stale log toggle in the body is ignored, not echoed',
     JSON.parse(previewExtra.text)?.preview?.includePluginLogs === undefined,
     previewExtra.text.slice(0, 200),
+  )
+
+  // The restore progress the settings card polls while a restore runs. Its shape
+  // is a contract with the client: six fixed stages in order, a state machine the
+  // card renders as-is, and the outcome on `success` so it never collides with the
+  // RPC envelope's own `ok`.
+  const idle = await call(port, { body: JSON.stringify({ action: 'restoreProgress' }) })
+  const idlePayload = JSON.parse(idle.text)
+  check('POST restoreProgress is answered 200', idle.status === 200, `status ${idle.status} body ${idle.text.slice(0, 200)}`)
+  check('an idle progress reports itself as finished', idlePayload?.active === false && idlePayload?.done === true, idle.text.slice(0, 200))
+  check('the progress keeps the RPC envelope ok', idlePayload?.ok === true)
+  check('the outcome rides on success, not on the envelope ok', idlePayload?.success === null, String(idlePayload?.success))
+  check(
+    'the progress carries the six ordered stages',
+    JSON.stringify((idlePayload?.stages ?? []).map((s) => s.key)) === JSON.stringify(['fetch', 'validate', 'write', 'probe', 'install', 'boot']),
+    JSON.stringify((idlePayload?.stages ?? []).map((s) => s.key)),
+  )
+  check(
+    'every stage is labelled for the UI',
+    (idlePayload?.stages ?? []).every((s) => typeof s.label === 'string' && s.label.length > 0),
+    JSON.stringify((idlePayload?.stages ?? []).map((s) => s.label)),
+  )
+
+  // A restore that cannot even start has to come back with a finished progress
+  // state, otherwise the card would spin forever and the 409 gate would stay shut.
+  // This fixture has no token, so the restore dies in resolveToken before anything
+  // touches the profile.
+  const badRestore = await call(port, { body: JSON.stringify({ action: 'restore', gist: 'not-a-gist' }) })
+  const badPayload = JSON.parse(badRestore.text)
+  check('a restore that cannot start reports a failure', badPayload?.ok === false, badRestore.text.slice(0, 200))
+  check('the failure still ships a progress the card can draw', badPayload?.progress !== undefined && badPayload?.progress?.active === false, badRestore.text.slice(0, 300))
+  check('the failed restore is attributed to a stage', badPayload?.progress?.stages?.[0]?.status === 'fail', JSON.stringify(badPayload?.progress?.stages?.[0] ?? null))
+  check('the failed restore carries its reason', badPayload?.progress?.success === false, String(badPayload?.progress?.success))
+  check(
+    'a failed restore leaves the profile manifest untouched',
+    JSON.parse(readFileSync(join(profile, 'package.json'), 'utf8')).name === 'compat-profile',
   )
 
   const cross = await call(port, { body: JSON.stringify({ action: 'getConfig' }), origin: 'https://evil.example' })

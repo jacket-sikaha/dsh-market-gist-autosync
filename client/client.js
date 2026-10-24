@@ -219,6 +219,16 @@ window.__ModuleLoader__.load({
       return total;
     }
 
+    // 用时：恢复进度里显示 12.4s / 1 分 05 秒
+    function fmtDuration(ms) {
+      if (!isFinite(ms) || ms < 0) return "-";
+      var sec = ms / 1000;
+      if (sec < 60) return sec.toFixed(1) + "s";
+      var min = Math.floor(sec / 60);
+      var rest = Math.round(sec - min * 60);
+      return min + " 分 " + (rest < 10 ? "0" + rest : rest) + " 秒";
+    }
+
     // 备份内容展示弹窗。主要 = 决定装哪些插件、怎么加载；备份插件列表 = 这些
     // 插件各自的名字与版本约束（恢复时就按它装）；次要只在真有其他配置时出现。
     function PreviewDialog(props) {
@@ -464,6 +474,443 @@ window.__ModuleLoader__.load({
       );
     }
 
+    // 恢复进度卡片。阶段顺序由 host 推进：每个进度事件都表示「上一阶段完成」，
+    // 所以这里只读 status，不自己跑状态机。
+    // 完成后收敛成一行汇总，「查看详情」才展开阶段明细与日志。
+    var STAGE_ICON = { ok: "✓", fail: "✕", running: "●", pending: "○" };
+    var STAGE_COLOR = { ok: "#15803d", fail: "#dc2626", running: "#2563eb", pending: "#c3c9d4" };
+    var BAR_KEYFRAMES =
+      "@keyframes gba-indeterminate{0%{transform:translateX(-120%)}100%{transform:translateX(320%)}}";
+
+    // 慢路径按插件推进，能给出确定比例；快路径只知道包数，退回不确定条。
+    function stageRatio(stages) {
+      for (var i = 0; i < stages.length; i++) {
+        var st = stages[i];
+        if (st.key !== "install" || st.status !== "running") continue;
+        var m = /^(\d+)\/(\d+)$/.exec(String(st.detail || ""));
+        if (m) return { done: Number(m[1]) - 1, total: Number(m[2]) };
+      }
+      return null;
+    }
+
+    function RestoreProgressCard(props) {
+      var p = props.progress || {};
+      var stages = Array.isArray(p.stages) ? p.stages : [];
+      var done = p.done === true;
+      var failed = p.success === false;
+      var finished = done || failed;
+      var running = null;
+      for (var i = 0; i < stages.length; i++) {
+        if (stages[i].status === "running") {
+          running = stages[i];
+          break;
+        }
+      }
+      var summary = p.summary || null;
+      var elapsed =
+        summary && typeof summary.durationMs === "number"
+          ? summary.durationMs
+          : p.startedAt
+            ? (props.now || Date.now()) - p.startedAt
+            : 0;
+      var headline = failed
+        ? "恢复失败"
+        : done
+          ? "恢复完成"
+          : running
+            ? "正在" + running.label
+            : "正在恢复";
+      var tone = failed ? "#dc2626" : done ? "#15803d" : "#2563eb";
+      var counters = p.counters || null;
+      var ratio = stageRatio(stages);
+      var logLines = Array.isArray(p.lines) ? p.lines : [];
+      var stderr = Array.isArray(p.stderr) ? p.stderr : [];
+      var showStages = !finished || props.open;
+
+      var logRef = React.useRef(null);
+      React.useEffect(
+        function () {
+          var el = logRef.current;
+          if (el) el.scrollTop = el.scrollHeight;
+        },
+        [logLines.length, props.open],
+      );
+
+      var barInner = { height: "100%", borderRadius: 2, background: tone };
+      if (ratio && ratio.total > 0) {
+        barInner.width = Math.min(100, Math.round((ratio.done / ratio.total) * 100)) + "%";
+        barInner.transition = "width .3s ease";
+      } else if (finished) {
+        barInner.width = "100%";
+      } else {
+        barInner.width = "35%";
+        barInner.animation = "gba-indeterminate 1.1s ease-in-out infinite";
+      }
+
+      var summaryLine = summary
+        ? summary.ok
+          ? "已恢复 " +
+            summary.files +
+            " 个文件" +
+            (summary.installed ? "，安装 " + summary.installed + " 个插件" : "") +
+            (summary.skipped ? "，跳过 " + summary.skipped + " 个本机记录" : "")
+          : summary.message || "恢复失败"
+        : "";
+
+      function stageRow(st) {
+        return React.createElement(
+          "div",
+          {
+            key: st.key,
+            style: { display: "flex", alignItems: "center", gap: 8, padding: "2px 0" },
+          },
+          React.createElement(
+            "span",
+            {
+              style: {
+                width: 12,
+                color: STAGE_COLOR[st.status] || STAGE_COLOR.pending,
+                fontSize: 11,
+                lineHeight: "14px",
+                textAlign: "center",
+              },
+            },
+            STAGE_ICON[st.status] || "○",
+          ),
+          React.createElement(
+            "span",
+            { style: { color: st.status === "pending" ? "#9aa2ae" : "#1f2328" } },
+            st.label,
+          ),
+          React.createElement(
+            "span",
+            {
+              style: {
+                flex: 1,
+                color: st.status === "fail" ? "#dc2626" : "#8b93a1",
+                fontSize: 11,
+                textAlign: "right",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              },
+            },
+            st.detail || "",
+          ),
+          typeof st.ms === "number" && st.ms > 0
+            ? React.createElement(
+                "span",
+                {
+                  style: {
+                    color: "#b4bac4",
+                    fontSize: 11,
+                    width: 52,
+                    textAlign: "right",
+                  },
+                },
+                fmtDuration(st.ms),
+              )
+            : null,
+        );
+      }
+
+      return React.createElement(
+        "div",
+        {
+          style: {
+            margin: "8px 0",
+            padding: "10px 12px",
+            border: "1px solid " + (failed ? "#fecaca" : "#e5e7eb"),
+            borderRadius: 8,
+            background: failed ? "#fff5f5" : "#fbfcfd",
+            fontSize: 12,
+          },
+        },
+        !finished ? React.createElement("style", null, BAR_KEYFRAMES) : null,
+        React.createElement(
+          "div",
+          { style: { display: "flex", alignItems: "center", gap: 8 } },
+          React.createElement("span", {
+            style: { width: 7, height: 7, borderRadius: "50%", background: tone },
+          }),
+          React.createElement(
+            "span",
+            { style: { fontWeight: 600, color: "#1f2328", fontSize: 13 } },
+            headline,
+          ),
+          React.createElement(
+            "span",
+            { style: { flex: 1, textAlign: "right", color: "#8b93a1", fontSize: 11 } },
+            (finished ? "用时 " : "已用 ") + fmtDuration(elapsed),
+          ),
+          finished
+            ? React.createElement(
+                "button",
+                {
+                  type: "button",
+                  onClick: props.onToggle,
+                  style: {
+                    border: "none",
+                    background: "transparent",
+                    color: "#2563eb",
+                    fontSize: 11,
+                    cursor: "pointer",
+                    padding: 0,
+                    whiteSpace: "nowrap",
+                  },
+                },
+                props.open ? "收起详情" : "查看详情",
+              )
+            : null,
+        ),
+        React.createElement(
+          "div",
+          {
+            style: {
+              margin: "8px 0 6px",
+              height: 4,
+              borderRadius: 2,
+              background: "#eef0f3",
+              overflow: "hidden",
+            },
+          },
+          React.createElement("div", { style: barInner }),
+        ),
+        !finished && counters
+          ? React.createElement(
+              "div",
+              { style: { color: "#6b7280", fontSize: 11, marginBottom: 4 } },
+              "已解析 " +
+                counters.resolved +
+                " 个包（新增 " +
+                counters.added +
+                " 个）",
+            )
+          : null,
+        finished && summaryLine
+          ? React.createElement(
+              "div",
+              {
+                style: {
+                  color: failed ? "#b91c1c" : "#4b5563",
+                  lineHeight: 1.6,
+                  wordBreak: "break-word",
+                },
+              },
+              summaryLine,
+            )
+          : null,
+        showStages
+          ? React.createElement("div", { style: { marginTop: 6 } }, stages.map(stageRow))
+          : null,
+        props.open
+          ? React.createElement(
+              "div",
+              null,
+              logLines.length > 0
+                ? React.createElement(
+                    "div",
+                    {
+                      ref: logRef,
+                      style: {
+                        marginTop: 8,
+                        padding: "6px 8px",
+                        background: "#fff",
+                        border: "1px solid #eef0f3",
+                        borderRadius: 6,
+                        maxHeight: 150,
+                        overflowY: "auto",
+                        fontFamily: "monospace",
+                        fontSize: 11,
+                        color: "#4b5563",
+                        lineHeight: 1.7,
+                      },
+                    },
+                    logLines.map(function (line, i) {
+                      return React.createElement("div", { key: i }, line);
+                    }),
+                  )
+                : null,
+              stderr.length > 0
+                ? React.createElement(
+                    "div",
+                    null,
+                    React.createElement(
+                      "div",
+                      {
+                        style: { marginTop: 8, marginBottom: 2, color: "#9aa2ae", fontSize: 11 },
+                      },
+                      "pnpm 输出",
+                    ),
+                    React.createElement(
+                      "div",
+                      {
+                        style: {
+                          padding: "6px 8px",
+                          background: "#fff",
+                          border: "1px solid #f3d6d6",
+                          borderRadius: 6,
+                          maxHeight: 130,
+                          overflowY: "auto",
+                          fontFamily: "monospace",
+                          fontSize: 11,
+                          color: "#b91c1c",
+                          whiteSpace: "pre-wrap",
+                          lineHeight: 1.6,
+                        },
+                      },
+                      stderr.join("\n"),
+                    ),
+                  )
+                : null,
+            )
+          : null,
+      );
+    }
+
+    // 恢复完成后的重启提示。新装的插件与被覆盖的配置都要下次启动才加载，
+    // 不说清楚的话，用户会以为恢复没生效。
+    function RestartDialog(props) {
+      var summary = props.summary || {};
+      return React.createElement(
+        "div",
+        {
+          onClick: props.onClose,
+          style: {
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15,23,42,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            zIndex: 60,
+          },
+        },
+        React.createElement(
+          "div",
+          {
+            onClick: function (e) {
+              e.stopPropagation();
+            },
+            style: {
+              width: "min(460px, 100%)",
+              background: "#fff",
+              borderRadius: 10,
+              boxShadow: "0 20px 50px rgba(15,23,42,0.28)",
+              overflow: "hidden",
+            },
+          },
+          React.createElement(
+            "div",
+            {
+              style: {
+                padding: "12px 16px",
+                borderBottom: "1px solid #eef0f3",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              },
+            },
+            React.createElement(
+              "div",
+              { style: { flex: 1, fontSize: 13, fontWeight: 600, color: "#1f2328" } },
+              "恢复完成",
+            ),
+            React.createElement(
+              "button",
+              {
+                type: "button",
+                onClick: props.onClose,
+                "aria-label": "关闭",
+                style: {
+                  border: "none",
+                  background: "transparent",
+                  fontSize: 14,
+                  color: "#8b93a1",
+                  cursor: "pointer",
+                  padding: "0 2px",
+                  lineHeight: 1,
+                },
+              },
+              "✕",
+            ),
+          ),
+          React.createElement(
+            "div",
+            { style: { padding: "14px 16px" } },
+            React.createElement(
+              "div",
+              { style: { fontSize: 13, color: "#1f2328", lineHeight: 1.7 } },
+              "已恢复 " +
+                (summary.files || 0) +
+                " 个文件到 profile「" +
+                (props.profile || "") +
+                "」" +
+                (summary.installed ? "，安装 " + summary.installed + " 个插件" : "") +
+                (summary.durationMs ? "，用时 " + fmtDuration(summary.durationMs) : "") +
+                "。",
+            ),
+            React.createElement(
+              "div",
+              {
+                style: {
+                  marginTop: 12,
+                  padding: "10px 12px",
+                  background: "#fff8e6",
+                  border: "1px solid #f5e0a3",
+                  borderRadius: 8,
+                  fontSize: 12,
+                  color: "#8a6100",
+                  lineHeight: 1.7,
+                },
+              },
+              React.createElement(
+                "div",
+                { style: { fontWeight: 600, marginBottom: 2 } },
+                "需要重启 DSH 才会生效",
+              ),
+              "新装的插件与被覆盖的配置都在下次启动时加载，现在仍是恢复前的状态。",
+            ),
+            summary.message
+              ? React.createElement(
+                  "div",
+                  {
+                    style: {
+                      marginTop: 10,
+                      padding: "8px 10px",
+                      background: "#fbfcfd",
+                      border: "1px solid #eef0f3",
+                      borderRadius: 6,
+                      fontSize: 11,
+                      color: "#6b7280",
+                      lineHeight: 1.7,
+                      maxHeight: 120,
+                      overflowY: "auto",
+                      whiteSpace: "pre-wrap",
+                    },
+                  },
+                  summary.message,
+                )
+              : null,
+          ),
+          React.createElement(
+            "div",
+            {
+              style: {
+                padding: "10px 16px",
+                borderTop: "1px solid #eef0f3",
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 8,
+              },
+            },
+            React.createElement(Button, { onClick: props.onClose }, "知道了"),
+          ),
+        ),
+      );
+    }
+
     // -- the settings section component ----------------------------------------
     function GistBackupSection() {
       var state = React.useState({
@@ -486,6 +933,12 @@ window.__ModuleLoader__.load({
         previewOpen: false,
         preview: null,
         previewLimit: 1048576,
+        // 恢复进度详情（阶段明细 + 日志）是否展开
+        progressOpen: false,
+        // 恢复完成后弹出的重启提示；null = 不显示
+        restartNote: null,
+        // 忙碌时每 500ms 跳一次，驱动「已用 x.xs」重新渲染
+        tickAt: 0,
         // baseline = 已保存值的快照，用于「未保存修改」红点
         baseline: null,
         // host 报告的下次定时备份预计时间（epoch ms），关闭时为 null
@@ -498,6 +951,46 @@ window.__ModuleLoader__.load({
       }
       // Toast 自动消失计时器（跨渲染存活）
       var msgTimer = React.useRef(null);
+      // 恢复进度轮询（点「恢复」时启动，完成后停止）
+      var pollTimer = React.useRef(null);
+      // 已处理过的进度序号：seq 没变就跳过 setState，否则每 300ms 白重渲染一次
+      var pollSeq = React.useRef(-1);
+
+      function stopPolling() {
+        if (pollTimer.current) {
+          clearInterval(pollTimer.current);
+          pollTimer.current = null;
+        }
+      }
+
+      // 把 host 侧状态落到本地。done=true 时顺手收尾：停轮询、弹重启提示。
+      function applyProgress(p) {
+        if (!p || typeof p !== "object") return;
+        var seq = typeof p.seq === "number" ? p.seq : -1;
+        if (seq === pollSeq.current) return;
+        pollSeq.current = seq;
+        var patch = { progress: p };
+        if (p.done === true) {
+          stopPolling();
+          patch.busy = false;
+          if (p.summary && p.summary.ok === true) patch.restartNote = { summary: p.summary };
+          else if (p.summary) showMessage({ ok: false, text: p.summary.message || "恢复失败" });
+        }
+        setState(patch);
+      }
+
+      function startPolling() {
+        stopPolling();
+        pollTimer.current = setInterval(function () {
+          rpc("restoreProgress")
+            .then(function (p) {
+              if (p && p.ok) applyProgress(p);
+            })
+            .catch(function () {
+              /* 轮询失败不打断主流程：恢复响应本身还会回一次最终状态 */
+            });
+        }, 300);
+      }
 
       React.useEffect(function () {
         rpc("getConfig")
@@ -541,6 +1034,44 @@ window.__ModuleLoader__.load({
             });
           });
       }, []);
+
+      // 刷新页面后自动接上正在跑的恢复（host 侧状态一直在内存里）
+      React.useEffect(function () {
+        var cancelled = false;
+        rpc("restoreProgress")
+          .then(function (p) {
+            if (cancelled || !p || !p.ok) return;
+            if (p.active === true) {
+              // seq 减一：让紧接着的第一次轮询能落地，把卡片推进到最新一帧
+              pollSeq.current = typeof p.seq === "number" ? p.seq - 1 : -1;
+              setState({ busy: true, progress: p });
+              startPolling();
+            } else if (p.summary) {
+              // 上次恢复已结束：把结论留在卡片上，免得刷新后就看不到结果
+              pollSeq.current = typeof p.seq === "number" ? p.seq : -1;
+              setState({ progress: p });
+            }
+          })
+          .catch(function () {
+            /* 拿不到进度不影响正常操作 */
+          });
+        return function () {
+          cancelled = true;
+          stopPolling();
+        };
+      }, []);
+
+      // 忙碌时每 500ms 跳一次，让「已用 12.4s」走起来（进度轮询在 seq 没变时
+      // 不重渲染，所以计时得单独驱动）
+      React.useEffect(function () {
+        if (!state[0].busy) return undefined;
+        var timer = setInterval(function () {
+          setState({ tickAt: Date.now() });
+        }, 500);
+        return function () {
+          clearInterval(timer);
+        };
+      }, [state[0].busy]);
 
       // 页面可见时轮询上传记录：后台定时备份完成后，前端无需重启或手动刷新
       // 就能看到新记录。只更新 uploads 字段，不打断用户正在编辑的其他输入。
@@ -750,32 +1281,47 @@ window.__ModuleLoader__.load({
           )
         )
           return;
-        setState({ busy: true, progress: ["正在下载备份…"] });
-        // Poll restore progress so the user sees which plugins are installing.
-        var pollTimer = setInterval(function () {
-          rpc("restoreProgress")
-            .then(function (p) {
-              if (p && p.ok && Array.isArray(p.lines) && p.lines.length > 0) {
-                setState({ progress: p.lines.slice() });
-              }
-            })
-            .catch(function () {
-              /* ignore poll errors */
-            });
-        }, 400);
+        // 先摆一帧占位状态：host 的第一份快照要等 RPC 进去才有，否则这
+        // 300ms 里卡片是空的。
+        pollSeq.current = -2;
+        setState({
+          busy: true,
+          progressOpen: false,
+          restartNote: null,
+          tickAt: Date.now(),
+          progress: {
+            active: true,
+            done: false,
+            success: null,
+            startedAt: Date.now(),
+            stages: [],
+            lines: [],
+            stderr: [],
+            seq: -2,
+          },
+        });
+        startPolling();
         rpc("restore", { gist: gistValue })
           .then(function (r) {
-            clearInterval(pollTimer);
-            setState({ busy: false, progress: (r && r.progressLines) || null });
-            showMessage(r.ok ? { ok: true, message: r.message } : r);
+            stopPolling();
+            var p = r && r.progress ? r.progress : null;
+            if (p) pollSeq.current = typeof p.seq === "number" ? p.seq : -1;
+            var patch = { busy: false };
+            if (p) patch.progress = p;
+            // host 是旧版本（回包没有 progress）时别把占位帧留在屏幕上，否则
+            // 卡片会永远停在「正在读取备份」
+            else if (!r || !r.ok) patch.progress = null;
+            // 成功不再弹 toast：重启提示弹窗已经把结论说全了，重复两遍更吵
+            if (r && r.ok && p && p.summary && p.summary.ok === true) {
+              patch.restartNote = { summary: p.summary };
+            }
+            setState(patch);
+            if (!r || !r.ok) showMessage(r || { ok: false, error: "恢复失败" });
           })
           .catch(function (e) {
-            clearInterval(pollTimer);
-            setState({
-              busy: false,
-              progress: null,
-              message: { ok: false, text: String(e) },
-            });
+            stopPolling();
+            setState({ busy: false });
+            showMessage({ ok: false, error: String((e && e.message) || e) });
           });
       }
 
@@ -1157,32 +1703,16 @@ window.__ModuleLoader__.load({
             "恢复",
           ),
         ),
-        // 恢复进度（实时显示正在安装哪些插件）
-        s.progress && s.progress.length > 0
-          ? React.createElement(
-              "div",
-              {
-                style: {
-                  margin: "8px 0",
-                  padding: "8px 12px",
-                  background: "#f6f8fa",
-                  border: "1px solid #e5e7eb",
-                  borderRadius: 6,
-                  fontSize: 12,
-                  fontFamily: "monospace",
-                  color: "#4b5563",
-                  maxHeight: 140,
-                  overflowY: "auto",
-                },
+        // 恢复进度：阶段视图 + 用时；完成后收敛成一行，可展开详情
+        s.progress && (s.progress.active || s.progress.done)
+          ? React.createElement(RestoreProgressCard, {
+              progress: s.progress,
+              open: s.progressOpen,
+              now: s.tickAt,
+              onToggle: function () {
+                setState({ progressOpen: !s.progressOpen });
               },
-              s.progress.map(function (line, i) {
-                return React.createElement(
-                  "div",
-                  { key: i, style: { padding: "1px 0" } },
-                  line,
-                );
-              }),
-            )
+            })
           : null,
 
         // ===== 上传记录 =====
@@ -1416,6 +1946,17 @@ window.__ModuleLoader__.load({
               preview: s.preview,
               limitBytes: s.previewLimit,
               onClose: closePreview,
+            })
+          : null,
+
+        // 恢复完成后的重启提示（同样挂在树尾）
+        s.restartNote && s.restartNote.summary
+          ? React.createElement(RestartDialog, {
+              summary: s.restartNote.summary,
+              profile: s.activeProfile,
+              onClose: function () {
+                setState({ restartNote: null });
+              },
             })
           : null,
       );

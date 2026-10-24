@@ -29,6 +29,7 @@ import {
   type UploadRecord,
 } from "./config.js";
 import { doBackup, doRestore, doTest } from "./operations.js";
+import type { RestoreProgressEvent } from "./operations.js";
 import { previewProfileBackup } from "./backup.js";
 import { sendJson, sameOrigin, readJsonBody } from "./rpc.js";
 import {
@@ -36,7 +37,6 @@ import {
   migrateLegacyUploads,
   type UploadStore,
 } from "./storage.js";
-import type { InstallProgress } from "./install.js";
 // Re-export test surface so existing scripts keep working.
 export { mergeManifests, restoreBackup } from "./restore.js";
 export {
@@ -91,17 +91,284 @@ const Config: z<{ gistApiHost: string }> = z.object({
   gistApiHost: z.string().default("api.github.com"),
 });
 
-/** Live restore progress, kept in memory for the client to poll. */
+type StageStatus = "pending" | "running" | "ok" | "fail";
+
+/** One row of the restore progress view. */
+interface RestoreStage {
+  key: string;
+  label: string;
+  status: StageStatus;
+  /** Right-hand text: byte count, plugin count, or the failure reason. */
+  detail: string;
+  /** Wall time from the stage starting to its result landing. */
+  ms: number | null;
+}
+
+interface RestoreCounters {
+  resolved: number;
+  reused: number;
+  added: number;
+}
+
+interface RestoreSummary {
+  ok: boolean;
+  files: number;
+  installed: number;
+  skipped: number;
+  durationMs: number;
+  message: string;
+}
+
+/**
+ * Live restore progress, kept in memory for the client to poll.
+ *
+ * The stages are ordered the way a restore runs, and every progress event
+ * means "the stage before this one finished" — the UI therefore never has to
+ * reconcile start/stop pairs, it just watches the statuses.
+ */
 interface RestoreProgressState {
   active: boolean;
-  lines: string[];
   done: boolean;
+  /** Whether the restore finished successfully; the RPC envelope owns `ok`. */
+  success: boolean | null;
+  startedAt: number;
+  updatedAt: number;
+  /** Bumped on every change so the client can skip identical polls. */
+  seq: number;
+  stages: RestoreStage[];
+  /** When each stage started; parallel to `stages`, not sent to the client. */
+  starts: number[];
+  counters: RestoreCounters | null;
+  /** Human-readable log, for the details panel. */
+  lines: string[];
+  /** pnpm's own output when the install failed. */
+  stderr: string[];
+  summary: RestoreSummary | null;
 }
+
+const RESTORE_STAGES: Array<{ key: string; label: string }> = [
+  { key: "fetch", label: "读取备份" },
+  { key: "validate", label: "格式校验" },
+  { key: "write", label: "写入文件" },
+  { key: "probe", label: "依赖比对" },
+  { key: "install", label: "安装依赖" },
+  { key: "boot", label: "启动自检" },
+];
+
+function fmtBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
+function resetRestoreProgress(): RestoreProgressState {
+  const now = Date.now();
+  const stages: RestoreStage[] = RESTORE_STAGES.map((s) => ({
+    ...s,
+    status: "pending" as StageStatus,
+    detail: "",
+    ms: null,
+  }));
+  // The first stage is running the moment the restore is accepted, so the card
+  // has something to show before the first progress event arrives.
+  stages[0].status = "running";
+  return {
+    active: true,
+    done: false,
+    success: null,
+    startedAt: now,
+    updatedAt: now,
+    seq: 0,
+    stages,
+    starts: RESTORE_STAGES.map(() => now),
+    counters: null,
+    lines: [],
+    stderr: [],
+    summary: null,
+  };
+}
+
 let restoreProgress: RestoreProgressState = {
   active: false,
-  lines: [],
   done: true,
+  success: null,
+  startedAt: 0,
+  updatedAt: 0,
+  seq: 0,
+  stages: RESTORE_STAGES.map((s) => ({ ...s, status: "pending" as StageStatus, detail: "", ms: null })),
+  starts: RESTORE_STAGES.map(() => 0),
+  counters: null,
+  lines: [],
+  stderr: [],
+  summary: null,
 };
+
+/** Shallow copy, so a poll cannot observe an object the restore is mutating. */
+function restoreStateSnapshot(): RestoreProgressState {
+  return {
+    ...restoreProgress,
+    stages: restoreProgress.stages.map((s) => ({ ...s })),
+    starts: [...restoreProgress.starts],
+    counters: restoreProgress.counters ? { ...restoreProgress.counters } : null,
+    lines: [...restoreProgress.lines],
+    stderr: [...restoreProgress.stderr],
+    summary: restoreProgress.summary ? { ...restoreProgress.summary } : null,
+  };
+}
+
+function pushLine(state: RestoreProgressState, line: string): void {
+  // The slow install path emits two lines per plugin; a big profile would
+  // otherwise keep megabytes of text alive for a panel nobody scrolled.
+  if (state.lines.length < 400) state.lines.push(line);
+}
+
+/** Close everything before `index` and make that stage the running one. */
+function advanceTo(state: RestoreProgressState, index: number): void {
+  const now = Date.now();
+  for (let i = 0; i < index; i++) {
+    const stage = state.stages[i];
+    if (stage.status === "pending" || stage.status === "running") {
+      stage.status = "ok";
+      stage.ms = now - state.starts[i];
+    }
+  }
+  const next = state.stages[index];
+  if (next && next.status === "pending") {
+    next.status = "running";
+    state.starts[index] = now;
+  }
+}
+
+function applyRestoreProgress(p: RestoreProgressEvent): void {
+  const state = restoreProgress;
+  state.updatedAt = Date.now();
+  state.seq += 1;
+  switch (p.phase) {
+    case "fetch":
+      pushLine(state, "正在下载备份…");
+      return;
+    case "fetched":
+      advanceTo(state, 1);
+      state.stages[0].detail = fmtBytes(p.bytes);
+      pushLine(state, `已下载 ${fmtBytes(p.bytes)}`);
+      return;
+    case "validated":
+      advanceTo(state, 2);
+      state.stages[1].detail = `${p.files} 个文件`;
+      pushLine(state, `格式校验通过（${p.files} 个文件）`);
+      return;
+    case "written":
+      advanceTo(state, 3);
+      state.stages[2].detail = `${p.restored} 个文件${p.skipped > 0 ? `，跳过 ${p.skipped}` : ""}`;
+      pushLine(state, `已写入 ${p.restored} 个文件${p.skipped > 0 ? `（跳过 ${p.skipped} 个本机记录）` : ""}`);
+      return;
+    case "probe":
+      advanceTo(state, 4);
+      state.stages[3].detail = p.missing.length > 0 ? `需装 ${p.missing.length} 个` : "均已安装";
+      pushLine(
+        state,
+        p.missing.length > 0
+          ? `需安装 ${p.missing.length} 个插件：${p.missing.join("、")}`
+          : "依赖均已安装",
+      );
+      return;
+    case "install-all":
+      advanceTo(state, 4);
+      state.counters = null;
+      pushLine(state, "正在安装依赖…");
+      return;
+    case "install-count":
+      // Counts are packages, not plugins — one plugin pulls dozens — so they
+      // stay counters rather than becoming a percentage.
+      state.counters = { resolved: p.resolved, reused: p.reused, added: p.added };
+      return;
+    case "install-one":
+      state.counters = null;
+      state.stages[4].detail = `${p.index}/${p.total}`;
+      pushLine(state, `正在安装 ${p.name}（${p.index}/${p.total}）…`);
+      return;
+    case "done-one":
+      pushLine(state, `${p.name} ${p.ok ? "✓ 安装成功" : "✗ 安装失败"}`);
+      return;
+    case "boot": {
+      advanceTo(state, 5);
+      const boot = state.stages[5];
+      boot.status = "ok";
+      boot.ms = Date.now() - state.starts[5];
+      boot.detail = p.errors > 0 ? `移除 ${p.errors} 个` : "通过";
+      pushLine(
+        state,
+        p.errors > 0 ? `启动预检：移除 ${p.errors} 个无法解析的 bundle` : "启动预检通过",
+      );
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+/** Seal the state after doRestore settles, success or failure. */
+function finishRestoreProgress(result: Record<string, unknown>, startedAt: number): void {
+  const state = restoreProgress;
+  const now = Date.now();
+  const ok = result.ok === true;
+  state.active = false;
+  state.done = true;
+  state.success = ok;
+  state.updatedAt = now;
+  state.seq += 1;
+  // On failure the stage that was still running is the one to blame: "依赖安装"
+  // failing is actionable, a red line across the whole card is not. Stages that
+  // never started stay pending instead of being marked done.
+  let failedIndex = -1;
+  if (!ok) {
+    const running = state.stages.findIndex((stage) => stage.status === "running");
+    if (running >= 0) {
+      failedIndex = running;
+    } else {
+      for (let i = state.stages.length - 1; i >= 0; i -= 1) {
+        if (state.stages[i].ms !== null) {
+          failedIndex = i;
+          break;
+        }
+      }
+      if (failedIndex < 0) failedIndex = 0;
+    }
+  }
+  for (let i = 0; i < state.stages.length; i++) {
+    if (i === failedIndex) continue;
+    const stage = state.stages[i];
+    if (stage.status === "running") {
+      stage.status = "ok";
+      stage.ms = Math.max(0, now - state.starts[i]);
+    }
+  }
+  if (!ok) {
+    const failed = state.stages[failedIndex];
+    failed.status = "fail";
+    failed.ms = Math.max(0, now - state.starts[failedIndex]);
+    const reason = typeof result.error === "string" ? result.error : "恢复失败";
+    failed.detail = reason.length > 40 ? `${reason.slice(0, 40)}…` : reason;
+    state.lines.push(`恢复失败：${reason}`);
+  }
+  state.summary = {
+    ok,
+    files: typeof result.restored === "number" ? result.restored : 0,
+    installed: Array.isArray(result.installedNames) ? result.installedNames.length : 0,
+    skipped: Array.isArray(result.sessionLocalSkipped) ? result.sessionLocalSkipped.length : 0,
+    durationMs: now - startedAt,
+    message:
+      typeof result.message === "string"
+        ? result.message
+        : typeof result.error === "string"
+          ? result.error
+          : "",
+  };
+  state.stderr = Array.isArray(result.installStderr)
+    ? result.installStderr.filter((line): line is string => typeof line === "string")
+    : [];
+}
 
 /**
  * Backup mutex. A backup collects the live profile and PATCHes a single gist:
@@ -111,23 +378,6 @@ let restoreProgress: RestoreProgressState = {
  * skip this tick); manual runs are rejected so the UI can surface the clash.
  */
 let backupInFlight = false;
-
-function progressToLine(p: InstallProgress): string {
-  switch (p.phase) {
-    case "probe":
-      return p.missing.length > 0
-        ? `需安装 ${p.missing.length} 个插件：${p.missing.join("、")}`
-        : "依赖均已安装";
-    case "install-all":
-      return "正在安装依赖…";
-    case "install-one":
-      return `正在安装 ${p.name}（${p.index}/${p.total}）…`;
-    case "done-one":
-      return `${p.name} ${p.ok ? "✓ 安装成功" : "✗ 安装失败"}`;
-    default:
-      return "";
-  }
-}
 
 async function apply(ctx: any, rawConfig: any) {
   const apiHost: string = rawConfig?.gistApiHost ?? "api.github.com";
@@ -440,25 +690,31 @@ async function apply(ctx: any, rawConfig: any) {
             });
           } else {
             const gistInput = typeof body.gist === "string" ? body.gist : "";
-            restoreProgress = { active: true, lines: [], done: false };
-            const result = await doRestore(
-              readBackupConfig(),
-              apiHost,
-              gistInput,
-              (p) => {
-                const line = progressToLine(p);
-                if (line) restoreProgress.lines.push(line);
-              },
-            );
-            restoreProgress.done = true;
-            restoreProgress.active = false;
+            const startedAt = Date.now();
+            restoreProgress = resetRestoreProgress();
+            let result: Record<string, unknown>;
+            try {
+              result = (await doRestore(
+                readBackupConfig(),
+                apiHost,
+                gistInput,
+                applyRestoreProgress,
+              )) as Record<string, unknown>;
+            } catch (error) {
+              // A throw would leave `active` stuck at true, which the client
+              // reads as "still restoring" forever and the 409 guard never
+              // clears. Seal the state before reporting.
+              result = err("other", (error as Error).message);
+            }
+            finishRestoreProgress(result, startedAt);
             sendJson(response, 200, {
               ...result,
+              progress: restoreStateSnapshot(),
               progressLines: restoreProgress.lines,
             });
           }
         } else if (action === "restoreProgress") {
-          sendJson(response, 200, { ok: true, ...restoreProgress });
+          sendJson(response, 200, { ok: true, ...restoreStateSnapshot() });
         } else if (action === "listUploads") {
           // nextRunAt rides along: the client already polls this endpoint,
           // and the ETA changes on every tick / schedule save.

@@ -26,7 +26,21 @@ import { orphanBundles, removeBundles, findDshInstallDir } from './analyze.js'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-export type ProgressFn = (p: InstallProgress) => void
+/**
+ * Progress events a restore reports. The install phases come straight from
+ * install.ts; the rest are the boundaries the UI needs to switch stages on.
+ * Every event means "the previous stage finished": the UI derives stage
+ * transitions from arrival order instead of needing explicit start/stop pairs.
+ */
+export type RestoreProgressEvent =
+  | { phase: 'fetch' }
+  | { phase: 'fetched'; bytes: number }
+  | { phase: 'validated'; files: number }
+  | { phase: 'written'; restored: number; skipped: number }
+  | InstallProgress
+  | { phase: 'boot'; errors: number }
+
+export type ProgressFn = (p: RestoreProgressEvent) => void
 
 /** Dependencies of the profile's manifest as it currently stands on disk. */
 function readManifestDeps(profileDirectory: string): unknown {
@@ -147,8 +161,10 @@ export async function doRestore(
   }
   if (gid === '') return err('invalid_gist', '请提供要恢复的 Gist id 或 URL')
 
+  onProgress?.({ phase: 'fetch' })
   const got = await readGistBackupContent(resolved.token, gid, host)
   if (!got.ok) return got
+  onProgress?.({ phase: 'fetched', bytes: got.content.length })
   let parsed: ParsedBackup
   try {
     parsed = JSON.parse(got.content)
@@ -158,6 +174,7 @@ export async function doRestore(
   // Strict validation, aligned with dshmarket's validatedBackup.
   const vErr = validateBackupStrict(parsed)
   if (vErr) return err('invalid_gist', vErr)
+  onProgress?.({ phase: 'validated', files: Array.isArray(parsed.files) ? parsed.files.length : 0 })
 
   const result = restoreBackup(profileRoot(), parsed)
   if (!result.ok) return err('restore_failed', result.error || '恢复失败')
@@ -165,6 +182,11 @@ export async function doRestore(
   // so, because "the backup had 141 files, 140 were restored" otherwise reads
   // like a bug.
   const skipped = result.skipped ?? []
+  onProgress?.({
+    phase: 'written',
+    restored: typeof result.restored === 'number' ? result.restored : 0,
+    skipped: skipped.length,
+  })
 
   // Detect link:/file: dependencies pointing at absolute paths on another
   // machine (aligned with dshmarket unportableDeps #205). New backups no longer
@@ -201,6 +223,7 @@ export async function doRestore(
   // instead of landing the user in recovery mode.
   const orphans = orphanBundles(profileRoot(), findDshInstallDir())
   const droppedBundles = removeBundles(profileRoot(), orphans)
+  onProgress?.({ phase: 'boot', errors: droppedBundles.length })
 
   // Wording matters here: `warnings` is the POST-install manifest, so any dep
   // still listed is one that survived pruning — typically its local path exists
@@ -227,6 +250,7 @@ export async function doRestore(
     prunedNames: install.prunedNames,
     unportableDepsWarnings: warnings,
     bootErrors: droppedBundles,
+    installStderr: install.stderrTail ?? [],
     message: `已恢复 ${result.restored} 个文件到 profile「${activeProfile()}」${result.mergedManifest ? '（package.json 已合并，未覆盖现有插件）' : ''}。${install.summary}${skipNote}${warnNote}${bootNote}。重启 DSH 后生效。`,
   }
 }
