@@ -29,7 +29,11 @@ export declare function verifyToken(token: string, host: string, signal?: AbortS
  * filename, or any single file whose content identifies itself as a dsh profile
  * backup (so a gist put together by hand still works). No other file-name
  * guesses: a name we never write only widens the surface for misreading the
- * wrong file. */
+ * wrong file.
+ *
+ * A file GitHub truncated is reported as too large rather than left to fail
+ * JSON.parse downstream: the API hands back at most 1 MB per file and flags the
+ * rest with `truncated`, so the honest diagnosis is "too big", not "corrupt". */
 export declare function readGistBackupContent(token: string, gistId: string, host: string, signal?: AbortSignal): Promise<{
     ok: true;
     content: string;

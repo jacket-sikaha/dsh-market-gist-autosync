@@ -60,11 +60,55 @@ export interface CollectResult {
     strippedDeps: UnportableDep[];
     /** Bundle rows dropped with them (a row with no installable package). */
     strippedBundles: string[];
+    /** Bytes the plugin-manager's install logs contribute to the serialized backup. */
+    pluginLogBytes: number;
 }
-export declare function collectProfileBackup(): CollectResult;
+/**
+ * @param options.includePluginLogs Also collect the host plugin-manager's pnpm
+ * install logs (`.plugin-manager/logs`). Off by default: they are this machine's
+ * install output, and a busy profile carries hundreds of KB of them.
+ */
+export declare function collectProfileBackup(options?: {
+    includePluginLogs?: boolean;
+}): CollectResult;
+/** The exact text a file entry becomes in the serialized backup (and on disk). */
+export declare function entryText(file: FileEntry): string;
+/**
+ * The largest entries in a serialized backup, so a size error can name what to
+ * drop instead of only stating the total.
+ */
+export declare function largestBackupEntries(files: FileEntry[], limit?: number): {
+    path: string;
+    bytes: number;
+}[];
 /** Serialize the backup with 2-space indent so it reads well on the Gist web UI. */
 export declare function serializeBackup(backup: unknown): string;
 export declare function buildBackupEnvelope(files: FileEntry[]): ParsedBackup;
+export type BackupFileTier = 'primary' | 'secondary';
+export declare function backupFileTier(path: string): BackupFileTier;
+export interface BackupPreviewEntry {
+    path: string;
+    bytes: number;
+    tier: BackupFileTier;
+    /** Host install log rather than profile config — droppable via the toggle. */
+    pluginLog: boolean;
+}
+export interface BackupPreview {
+    profileName: string;
+    fileCount: number;
+    /** Serialized bytes, i.e. what the Gist upload would actually weigh. */
+    totalBytes: number;
+    includePluginLogs: boolean;
+    pluginLogBytes: number;
+    entries: BackupPreviewEntry[];
+}
+/**
+ * What the next backup would contain, without uploading anything. Same collection
+ * path as doBackup, so the sizes shown are the sizes that would be sent.
+ */
+export declare function previewProfileBackup(options?: {
+    includePluginLogs?: boolean;
+}): BackupPreview;
 /**
  * Strict structural validation aligned with dshmarket's validatedBackup:
  * - format is exactly BACKUP_FORMAT and version exactly BACKUP_VERSION

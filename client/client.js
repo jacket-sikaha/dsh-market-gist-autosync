@@ -213,6 +213,247 @@ window.__ModuleLoader__.load({
       return fmtTime(iso);
     }
 
+    function sumBytes(items) {
+      var total = 0;
+      for (var i = 0; i < items.length; i++) total += items[i].bytes;
+      return total;
+    }
+
+    // 备份内容预览弹窗。主要 = 决定装哪些插件、怎么加载；次要 = 其他配置，
+    // 写回也不会改变行为 —— 所以分两组，别把 100 多个文件拍成一长条。
+    function PreviewDialog(props) {
+      var p = props.preview;
+      var limit = props.limitBytes || 1048576;
+      var rows = Array.isArray(p.entries) ? p.entries : [];
+      var primary = rows.filter(function (r) {
+        return r.tier === "primary";
+      });
+      var secondary = rows.filter(function (r) {
+        return r.tier === "secondary";
+      });
+      var rest = Math.max(0, limit - p.totalBytes);
+
+      function group(key, title, items, note) {
+        return React.createElement(
+          "div",
+          { key: key, style: { marginBottom: 16 } },
+          React.createElement(
+            "div",
+            {
+              style: {
+                display: "flex",
+                alignItems: "baseline",
+                gap: 8,
+                marginBottom: 4,
+              },
+            },
+            React.createElement(
+              "span",
+              { style: { fontSize: 12, fontWeight: 600, color: "#1f2328" } },
+              title,
+            ),
+            React.createElement(
+              "span",
+              { style: { fontSize: 11, color: "#8b93a1" } },
+              "共 " + items.length + " 项 · " + fmtBytes(sumBytes(items)),
+            ),
+          ),
+          note
+            ? React.createElement(
+                "div",
+                {
+                  style: {
+                    fontSize: 11,
+                    color: "#8b93a1",
+                    marginBottom: 6,
+                    lineHeight: 1.6,
+                  },
+                },
+                note,
+              )
+            : null,
+          items.length === 0
+            ? React.createElement(
+                "div",
+                { style: { fontSize: 11, color: "#b0b7c3" } },
+                "（无）",
+              )
+            : items.map(function (r) {
+                return React.createElement(
+                  "div",
+                  {
+                    key: r.path,
+                    style: {
+                      display: "flex",
+                      gap: 8,
+                      alignItems: "baseline",
+                      padding: "3px 0",
+                      borderBottom: "1px dashed #f1f3f5",
+                    },
+                  },
+                  React.createElement(
+                    "span",
+                    {
+                      style: {
+                        flex: 1,
+                        fontSize: 11,
+                        color: "#1f2328",
+                        wordBreak: "break-all",
+                        fontFamily:
+                          "ui-monospace, SFMono-Regular, Menlo, monospace",
+                      },
+                    },
+                    r.path,
+                  ),
+                  r.pluginLog
+                    ? React.createElement(
+                        "span",
+                        {
+                          style: {
+                            fontSize: 10,
+                            color: "#a16207",
+                            background: "#fef3c7",
+                            borderRadius: 4,
+                            padding: "0 4px",
+                          },
+                        },
+                        "日志",
+                      )
+                    : null,
+                  React.createElement(
+                    "span",
+                    {
+                      style: {
+                        fontSize: 11,
+                        color: "#6b7280",
+                        whiteSpace: "nowrap",
+                        fontVariantNumeric: "tabular-nums",
+                      },
+                    },
+                    fmtBytes(r.bytes),
+                  ),
+                );
+              }),
+        );
+      }
+
+      return React.createElement(
+        "div",
+        {
+          onClick: props.onClose,
+          style: {
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15,23,42,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            padding: 24,
+          },
+        },
+        React.createElement(
+          "div",
+          {
+            onClick: function (e) {
+              e.stopPropagation();
+            },
+            style: {
+              width: "min(560px, 100%)",
+              maxHeight: "78vh",
+              display: "flex",
+              flexDirection: "column",
+              background: "#fff",
+              borderRadius: 10,
+              boxShadow: "0 20px 50px rgba(15,23,42,0.28)",
+              overflow: "hidden",
+            },
+          },
+          React.createElement(
+            "div",
+            {
+              style: {
+                padding: "12px 16px",
+                borderBottom: "1px solid #eef0f3",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              },
+            },
+            React.createElement(
+              "div",
+              { style: { flex: 1, fontSize: 13, fontWeight: 600, color: "#1f2328" } },
+              "备份内容预览",
+            ),
+            React.createElement(
+              "div",
+              { style: { fontSize: 11, color: "#8b93a1" } },
+              "profile「" + p.profileName + "」",
+            ),
+            React.createElement(
+              "button",
+              {
+                type: "button",
+                onClick: props.onClose,
+                "aria-label": "关闭",
+                style: {
+                  border: "none",
+                  background: "transparent",
+                  fontSize: 14,
+                  color: "#8b93a1",
+                  cursor: "pointer",
+                  padding: "0 2px",
+                  lineHeight: 1,
+                },
+              },
+              "✕",
+            ),
+          ),
+          React.createElement(
+            "div",
+            { style: { overflowY: "auto", padding: "12px 16px" } },
+            group(
+              "primary",
+              "主要",
+              primary,
+              "决定装哪些插件、怎么加载。这几项缺一个，恢复出来的 profile 就不是原样。",
+            ),
+            group(
+              "secondary",
+              "次要",
+              secondary,
+              p.includePluginLogs
+                ? "其他配置与安装日志。日志可以关掉（下方开关）来缩小体积，恢复时仍按备份内容原样写回。"
+                : "其他配置，写回也不会改变行为。",
+            ),
+          ),
+          React.createElement(
+            "div",
+            {
+              style: {
+                padding: "10px 16px",
+                borderTop: "1px solid #eef0f3",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              },
+            },
+            React.createElement(
+              "div",
+              { style: { flex: 1, fontSize: 11, color: "#8b93a1" } },
+              "合计 " +
+                fmtBytes(p.totalBytes) +
+                " / 上限 " +
+                fmtBytes(limit) +
+                " · 余量 " +
+                fmtBytes(rest),
+            ),
+            React.createElement(Button, { onClick: props.onClose, primary: false }, "关闭"),
+          ),
+        ),
+      );
+    }
+
     // -- the settings section component ----------------------------------------
     function GistBackupSection() {
       var state = React.useState({
@@ -223,6 +464,7 @@ window.__ModuleLoader__.load({
         scheduleEnabled: false,
         scheduleIntervalValue: "24",
         scheduleIntervalUnit: "hour",
+        includePluginLogs: false,
         uploads: [],
         envTokenSet: false,
         activeProfile: "desktop",
@@ -231,6 +473,10 @@ window.__ModuleLoader__.load({
         progress: null,
         message: null,
         busy: false,
+        // 备份内容预览弹窗（点「查看备份内容」时拉一次，关掉即丢弃）
+        previewOpen: false,
+        preview: null,
+        previewLimit: 1048576,
         // baseline = 已保存值的快照，用于「未保存修改」红点
         baseline: null,
         // host 报告的下次定时备份预计时间（epoch ms），关闭时为 null
@@ -260,6 +506,7 @@ window.__ModuleLoader__.load({
                 scheduleIntervalValue: String(c.scheduleIntervalValue || 24),
                 scheduleIntervalUnit:
                   c.scheduleIntervalUnit === "minute" ? "minute" : "hour",
+                includePluginLogs: c.includePluginLogs === true,
                 uploads: Array.isArray(c.uploads) ? c.uploads : [],
                 envTokenSet: !!r.envTokenSet,
                 activeProfile: r.activeProfile || "desktop",
@@ -273,6 +520,7 @@ window.__ModuleLoader__.load({
                   scheduleIntervalValue: String(c.scheduleIntervalValue || 24),
                   scheduleIntervalUnit:
                     c.scheduleIntervalUnit === "minute" ? "minute" : "hour",
+                  includePluginLogs: c.includePluginLogs === true,
                 },
               });
             } else {
@@ -342,18 +590,21 @@ window.__ModuleLoader__.load({
         setState({ message: null });
       }
 
-      // Token 有独立的保存按钮；这里只保存定时/备份相关设置（host 端 saveConfig
-      // 是部分合并，未传字段保持磁盘原值）。
+      // 一个「保存设置」按钮管全部可写项：Token、Gist ID、备份内容、定时。
+      // host 端 saveConfig 是部分合并，未传字段保持磁盘原值 —— 所以这里要把
+      // 需要落盘的字段一次全带上，不能指望别的按钮补。
       function save() {
         setState({ busy: true });
         rpc("saveConfig", {
           config: {
+            gistToken: state[0].gistToken,
             gistId: state[0].gistId,
             deviceName: state[0].deviceName,
             scheduleEnabled: state[0].scheduleEnabled,
             scheduleIntervalValue:
               parseInt(state[0].scheduleIntervalValue, 10) || 24,
             scheduleIntervalUnit: state[0].scheduleIntervalUnit,
+            includePluginLogs: state[0].includePluginLogs === true,
           },
         })
           .then(function (r) {
@@ -362,42 +613,57 @@ window.__ModuleLoader__.load({
               // 保存成功 → 更新 baseline，红点消失
               setState({
                 baseline: Object.assign({}, state[0].baseline, {
+                  gistToken: state[0].gistToken,
                   gistId: state[0].gistId,
                   scheduleEnabled: state[0].scheduleEnabled,
                   scheduleIntervalValue: String(state[0].scheduleIntervalValue),
                   scheduleIntervalUnit: state[0].scheduleIntervalUnit,
+                  includePluginLogs: state[0].includePluginLogs === true,
                 }),
               });
             }
-            showMessage(r.ok ? { ok: true, message: "定时设置已保存" } : r);
+            showMessage(r.ok ? { ok: true, message: "设置已保存" } : r);
           })
           .catch(function (e) {
             setState({ busy: false, message: { ok: false, text: String(e) } });
           });
       }
 
-      function saveToken() {
+      // 查看当前备份内容：走 host 的只读预览（与真正备份同一条收集路径），
+      // 所以这里的体积就是上传时会占的体积。日志开关按**界面上当前的值**传，
+      // 否则刚打开开关、还没保存就点预览，会看不到日志而以为开关没生效。
+      function openPreview() {
         setState({ busy: true });
-        rpc("saveConfig", { config: { gistToken: state[0].gistToken } })
+        rpc("previewBackup", {
+          includePluginLogs: state[0].includePluginLogs === true,
+        })
           .then(function (r) {
             setState({ busy: false });
-            if (r.ok) {
+            if (r.ok && r.preview) {
               setState({
-                baseline: Object.assign({}, state[0].baseline, {
-                  gistToken: state[0].gistToken,
-                }),
+                previewOpen: true,
+                preview: r.preview,
+                previewLimit:
+                  typeof r.limitBytes === "number" ? r.limitBytes : 1048576,
               });
+            } else {
+              showMessage(r);
             }
-            showMessage(r.ok ? { ok: true, message: "Token 已保存" } : r);
           })
           .catch(function (e) {
             setState({ busy: false, message: { ok: false, text: String(e) } });
           });
+      }
+
+      function closePreview() {
+        setState({ previewOpen: false });
       }
 
       function test() {
         setState({ busy: true });
-        rpc("testConnection")
+        // 用界面上当前的 Token 测，而不是上次保存的 —— 保存按钮与 Token 输入框
+        // 是两个控件，刚粘贴新 Token 还没保存就说「连接失败」是假的。
+        rpc("testConnection", { token: state[0].gistToken })
           .then(function (r) {
             setState({ busy: false });
             showMessage(
@@ -521,7 +787,8 @@ window.__ModuleLoader__.load({
 
       // 未保存修改检测：当前值与 baseline（上次保存/加载时的快照）对比
       var b = s.baseline || {};
-      var varsDirty = s.gistToken !== b.gistToken || s.gistId !== b.gistId;
+      var varsDirty = s.gistToken !== b.gistToken || s.gistId !== b.gistId ||
+        s.includePluginLogs !== b.includePluginLogs;
       var schedDirty =
         s.scheduleEnabled !== b.scheduleEnabled ||
         String(s.scheduleIntervalValue) !== String(b.scheduleIntervalValue) ||
@@ -606,9 +873,9 @@ window.__ModuleLoader__.load({
             "」的配置到私有 Gist，格式与插件市场（dshmarket）完全兼容、可互相恢复。",
         ),
 
-        // ===== 备份变量设置 =====
-        React.createElement(SectionTitle, { dirty: varsDirty }, "备份变量设置"),
-        // Token 单独一行：输入框 + 专属「保存 Token」按钮（敏感配置独立保存）
+        // ===== 备份设置 =====
+        React.createElement(SectionTitle, { dirty: varsDirty }, "备份设置"),
+        // Token 与 Gist ID、备份内容一起由底部「保存设置」提交（一个按钮管全部）
         React.createElement(
           "div",
           { style: { marginBottom: 12 } },
@@ -645,26 +912,6 @@ window.__ModuleLoader__.load({
                 color: "#1f2328",
               },
             }),
-            React.createElement(
-              "button",
-              {
-                type: "button",
-                onClick: saveToken,
-                disabled: s.busy,
-                style: {
-                  padding: "7px 14px",
-                  fontSize: 13,
-                  borderRadius: 6,
-                  cursor: s.busy ? "default" : "pointer",
-                  border: "1px solid #4f6ef7",
-                  background: "#fff",
-                  color: "#4f6ef7",
-                  opacity: s.busy ? 0.5 : 1,
-                  whiteSpace: "nowrap",
-                },
-              },
-              "保存 Token",
-            ),
           ),
           React.createElement(
             "div",
@@ -681,7 +928,7 @@ window.__ModuleLoader__.load({
               : React.createElement(
                   React.Fragment,
                   null,
-                  "没有 Token？点击 ",
+                  "没有 Token？",
                   React.createElement(
                     "a",
                     {
@@ -692,12 +939,7 @@ window.__ModuleLoader__.load({
                     },
                     "前往 GitHub 创建",
                   ),
-                  "（Scope 勾选 gist 即可）。也可用环境变量 DSH_GITHUB_TOKEN 代替",
-                  React.createElement(
-                    "div",
-                    { style: { marginTop: 2, color: "#a16207" } },
-                    "⚠ 修改 Token 后请点「保存 Token」，否则不会生效",
-                  ),
+                  "（勾 gist 权限），或用环境变量 DSH_GITHUB_TOKEN 代替。改完点「保存设置」生效。",
                 ),
           ),
         ),
@@ -711,20 +953,54 @@ window.__ModuleLoader__.load({
           },
           hint: "新建成功后会自动把 gist id 存回这里",
         }),
-        // 不备份 pnpm-lock.yaml（与 dshmarket 一致）：恢复时 pnpm install 会按
-        // package.json 重新生成它。原先的「同时备份 lockfile」开关因此移除，
-        // 改为把排除清单直接写出来，免得用户猜备份里到底有什么。
+        // 备份内容：一行说明 + 预览按钮。配置清单很长，塞进正文没人读得下去，
+        // 所以只在需要时用弹窗列出来（按主要/次要分组）。
+        React.createElement(
+          "div",
+          {
+            style: {
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              margin: "0 0 10px",
+            },
+          },
+          React.createElement(
+            "span",
+            {
+              style: { flex: 1, fontSize: 11, color: "#8b93a1", lineHeight: 1.6 },
+            },
+            "备份 profile 里的配置文件，不含 node_modules、pnpm-lock.yaml、*.bak 与符号链接。",
+          ),
+          React.createElement(
+            Button,
+            { onClick: openPreview, disabled: s.busy, primary: false },
+            "查看备份内容",
+          ),
+        ),
+        // 排除清单不可配置（与 dshmarket 一致），唯一可配的是「附带安装日志」：
+        // .plugin-manager/logs 上游既收集也接受，所以这个开关只影响备份体积，
+        // 不影响可恢复性 —— 与已被移除的 includeLock 不是一个性质。
+        React.createElement(Toggle, {
+          label: "备份里附带插件安装日志",
+          value: s.includePluginLogs === true,
+          onChange: function (v) {
+            setState({ includePluginLogs: v });
+          },
+        }),
         React.createElement(
           "p",
           {
             style: {
-              margin: "0 0 4px",
+              margin: "0 0 12px",
               fontSize: 11,
               color: "#8b93a1",
               lineHeight: 1.7,
             },
           },
-          "备份内容：profile 目录下除 node_modules、.dsh-market、.git、pnpm-lock.yaml、*.bak 和符号链接之外的全部文件。pnpm-lock.yaml 不备份 —— 恢复时 pnpm install 会按 package.json 重新生成，带上旧 lockfile 反而会把当前机器的依赖树搬到别处。",
+          s.includePluginLogs === true
+            ? "打开状态：日志会一起上传（一次安装 5–25 KB，多的能有近 800 KB，接近 1 MB 上限）。恢复时按备份内容原样写回。"
+            : "默认关闭。打开才有日志，装了上百个插件时会让备份接近 1 MB 上限。",
         ),
 
         // ===== 执行 =====
@@ -837,7 +1113,7 @@ window.__ModuleLoader__.load({
           React.createElement(
             Button,
             { onClick: save, disabled: s.busy, primary: false },
-            "保存定时设置",
+            "保存设置",
           ),
           React.createElement(
             Button,
@@ -849,6 +1125,18 @@ window.__ModuleLoader__.load({
             { onClick: backup, disabled: s.busy },
             "立即备份",
           ),
+        ),
+        React.createElement(
+          "div",
+          {
+            style: {
+              fontSize: 11,
+              color: "#8b93a1",
+              margin: "6px 0 0",
+              lineHeight: 1.6,
+            },
+          },
+          "「保存设置」一次保存上方全部项：Token、Gist ID、备份内容与定时设置。",
         ),
 
         // ===== 恢复 =====
@@ -1140,6 +1428,15 @@ window.__ModuleLoader__.load({
                 "✕",
               ),
             )
+          : null,
+
+        // 备份内容预览弹窗（挂在树尾，覆盖层自身 fixed 定位）
+        s.previewOpen && s.preview
+          ? React.createElement(PreviewDialog, {
+              preview: s.preview,
+              limitBytes: s.previewLimit,
+              onClose: closePreview,
+            })
           : null,
       );
     }

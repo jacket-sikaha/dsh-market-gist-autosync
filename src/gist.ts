@@ -170,20 +170,32 @@ export async function verifyToken(token: string, host: string, signal?: AbortSig
  * filename, or any single file whose content identifies itself as a dsh profile
  * backup (so a gist put together by hand still works). No other file-name
  * guesses: a name we never write only widens the surface for misreading the
- * wrong file. */
+ * wrong file.
+ *
+ * A file GitHub truncated is reported as too large rather than left to fail
+ * JSON.parse downstream: the API hands back at most 1 MB per file and flags the
+ * rest with `truncated`, so the honest diagnosis is "too big", not "corrupt". */
 export async function readGistBackupContent(token: string, gistId: string, host: string, signal?: AbortSignal): Promise<{ ok: true; content: string } | { ok: false; code: string; error: string }> {
   const r = await gistHttp(token, 'GET', `/gists/${gistId}`, undefined, host, signal)
   if (r.netError) return failNet(r) as { ok: false; code: string; error: string }
   if (r.status !== 200) return classify(r.status, r.body) as { ok: false; code: string; error: string }
-  let data: { files?: Record<string, { content?: string }> }
+  let data: { files?: Record<string, { content?: string; truncated?: boolean }> }
   try {
     data = JSON.parse(r.body)
   } catch {
     return err('invalid', 'Gist 响应不是有效 JSON') as { ok: false; code: string; error: string }
   }
   const filesObj = data.files ?? {}
-  const candidate = filesObj[GIST_FILENAME]?.content
-    ?? (Object.values(filesObj).find((f) => typeof f?.content === 'string' && f.content.includes('"dsh-profile-backup"'))?.content)
-  if (typeof candidate !== 'string') return err('invalid', 'Gist 中找不到 dsh 备份文件') as { ok: false; code: string; error: string }
-  return { ok: true, content: candidate }
+  const named = filesObj[GIST_FILENAME]
+  const chosen = typeof named?.content === 'string'
+    ? named
+    : Object.values(filesObj).find((f) => typeof f?.content === 'string' && f.content.includes('"dsh-profile-backup"'))
+  if (typeof chosen?.content !== 'string') return err('invalid', 'Gist 中找不到 dsh 备份文件') as { ok: false; code: string; error: string }
+  if (chosen.truncated === true) {
+    return err(
+      'too_large',
+      'Gist 里的备份文件超过 1MB，GitHub 只返回了前一部分（truncated: true），这份内容一定不是完整的 JSON。请用小于 1MB 的备份重新上传后再恢复。',
+    ) as { ok: false; code: string; error: string }
+  }
+  return { ok: true, content: chosen.content }
 }

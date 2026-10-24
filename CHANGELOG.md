@@ -2,6 +2,30 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.12] - 2026-10-22
+
+### 变更
+
+- **新增 `includePluginLogs` 开关（默认关）：备份默认不再带 DSH 宿主的插件安装日志**。`.plugin-manager/logs/operation-*/pnpm.log` 是宿主为每次包操作写的 `pnpm` 完整输出（无上限落盘，界面只取最后 16 KB），宿主自己从不清理。实测一台装了二十来个插件的机器：141 份日志共 792.6 KB，而同一份 profile 的配置本身只有 46.4 KB —— 备份被日志撑大 19 倍，887 KB 距 Gist 单文件 1 MB 上限只剩 137 KB。默认排除后备份回到 46.4 KB。
+- 开关语义是**只管收集、不管恢复**：恢复按备份里实际有什么写（备份可能来自另一台机器，那边的开关与这边无关），所以带日志的备份照常恢复。`run.json` 例外 —— 永不收集、永不写回，它记的是写备份那台机器的 pnpm 进程号，写回来会让本机下次装插件报「process N is still running」；跳过项会在恢复结果里列出。
+- `PROFILE_SKIP` **没有**加入 `.plugin-manager`：它同时决定恢复端拒收什么，而 dshmarket 的备份里带着这些日志，加进去就会拒收本来能正常恢复的备份。
+
+### 修复
+
+- **超限报错说不出原因**：备份超过 1 MB 时只报「超过 GitHub Gist 1 MB 限制」。现在会点名最大贡献者（打开日志开关时直接说「其中 X KB 是安装日志，关掉就能去掉」），并解释为什么必须拦住 —— GitHub 读取时会截断超过 1 MB 的文件，恢复端只能拿到半份 JSON。
+- **被截断的备份报成「JSON 无效」**：`readGistBackupContent` 现在检查 GitHub 的 `truncated` 标记；超 1 MB 的文件只返回前一部分，那种情况直接报「备份过大」，而不是让人以为备份坏了。
+
+### 新增
+
+- `scripts/itest-plugin-logs.mjs`（18 项）：默认不收 `logs/`、打开后收日志但不收 `run.json`、`pluginLogBytes` 计量、严格校验放行带日志的备份（dshmarket 会写这种）、恢复按备份内容写回并跳过 `run.json`、无日志的备份不创建 `.plugin-manager`。
+
+### 界面
+
+- 「备份变量设置」改名为「备份设置」，正文说明压到一行；新增「备份里附带插件安装日志」开关（默认关），灰字按开关当前状态给一句标价。
+- 新增「查看备份内容」按钮与预览弹窗：按 **主要**（`package.json`、`cordis.patch.yml`、`cordis.yml`、`pnpm-workspace.yaml` —— 决定装哪些插件、怎么加载）与 **次要**（其余配置，写回不改变行为）分组，逐个列出文件体积，底部显示合计 / 1 MB 上限 / 余量，日志条目带「日志」标签。走的是与真正备份同一条收集路径（`previewProfileBackup`），所以显示的就是上传时的体积。
+- 删掉独立的「保存 Token」按钮：Token、Gist ID、备份内容、定时设置统一由底部一个「保存设置」保存。因为 `saveConfig` 是部分合并，这个请求现在把需要落盘的字段一次带全（Token、Gist ID、设备名、定时、日志开关）。
+- 「测试连接」和「查看备份内容」都按**界面上当前的值**工作，而不是上次保存的值：刚粘贴的 Token 不必先保存就能测；刚打开日志开关、还没保存时预览也能看到日志。
+
 ## [0.1.11] - 2026-10-19
 
 ### 变更
@@ -152,6 +176,7 @@
 - 严格备份结构校验（格式、路径安全、无重复路径），上限 256 文件 / 1MB。
 - 设置页 UI：Token 独立保存、测试连接、立即备份、恢复进度、上传记录（最近 20 条）、浮动 toast 提示。
 
+[0.1.12]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.8...v0.1.9

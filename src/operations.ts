@@ -19,7 +19,7 @@ import {
   type UploadRecord,
 } from './config.js'
 import { createGist, updateGist, verifyToken, readGistBackupContent, gistHttp, classify, failNet } from './gist.js'
-import { collectProfileBackup, serializeBackup, buildBackupEnvelope, validateBackupStrict, unportableDeps, type ParsedBackup, type UnportableDep } from './backup.js'
+import { collectProfileBackup, serializeBackup, buildBackupEnvelope, validateBackupStrict, unportableDeps, largestBackupEntries, type ParsedBackup, type UnportableDep } from './backup.js'
 import { restoreBackup } from './restore.js'
 import { installRestoredDeps, type InstallProgress } from './install.js'
 import { orphanBundles, removeBundles, findDshInstallDir } from './analyze.js'
@@ -83,12 +83,14 @@ export async function doBackup(
   let containsSecrets = false
   let strippedDeps: UnportableDep[] = []
   let strippedBundles: string[] = []
+  let pluginLogBytes = 0
   try {
-    const collected = collectProfileBackup()
+    const collected = collectProfileBackup({ includePluginLogs: cfg.includePluginLogs })
     files = collected.files
     containsSecrets = collected.containsSecrets
     strippedDeps = collected.strippedDeps
     strippedBundles = collected.strippedBundles
+    pluginLogBytes = collected.pluginLogBytes
   } catch (e) {
     return err('other', e instanceof Error ? e.message : String(e))
   }
@@ -96,7 +98,15 @@ export async function doBackup(
   const content = serializeBackup(backup)
   const bytes = Buffer.byteLength(content)
   if (bytes > GIST_MAX_BYTES) {
-    return err('too_large', `备份 ${(bytes / 1024).toFixed(0)}KB 超过 GitHub Gist 1MB 限制`)
+    // Name what to drop. "Too large" alone leaves the user guessing, and the
+    // usual culprit is one switch away from being fixed.
+    const detail = pluginLogBytes > 0
+      ? `；其中 ${(pluginLogBytes / 1024).toFixed(0)}KB 是插件安装日志（.plugin-manager/logs）—— 关掉「备份里附带安装日志」就能把这部分去掉`
+      : `；占用最大的是 ${largestBackupEntries(files).map((e) => `${e.path}（${(e.bytes / 1024).toFixed(1)}KB）`).join('、')}`
+    return err(
+      'too_large',
+      `备份 ${(bytes / 1024).toFixed(0)}KB 超过 GitHub Gist 单文件 1MB 上限${detail}。GitHub 读取时会截断超过 1MB 的文件，恢复端只能拿到半份 JSON，所以这里不会上传。`,
+    )
   }
   const isNew = gid === ''
   const ref = isNew ? await createGist(token, content, host) : await updateGist(token, gid, content, host)
@@ -154,6 +164,10 @@ export async function doRestore(
 
   const result = restoreBackup(profileRoot(), parsed)
   if (!result.ok) return err('restore_failed', result.error || '恢复失败')
+  // Session-local records in the backup are deliberately not written back; say
+  // so, because "the backup had 141 files, 140 were restored" otherwise reads
+  // like a bug.
+  const skipped = result.skipped ?? []
 
   // Detect link:/file: dependencies pointing at absolute paths on another
   // machine (aligned with dshmarket unportableDeps #205). New backups no longer
@@ -203,15 +217,19 @@ export async function doRestore(
   const bootNote = droppedBundles.length > 0
     ? `；启动预检发现 ${droppedBundles.length} 个无法解析的 bundle，已从 profile 移除（保留的话下次重启会直接进恢复模式）：${droppedBundles.join('、')}`
     : ''
+  const skipNote = skipped.length > 0
+    ? `；已跳过 ${skipped.length} 个只属于备份来源机器的文件：${skipped.join('、')}（run.json 记录的是那台机器上正在运行的 pnpm 进程号，写回来会让本机下次装插件报「process N is still running」）`
+    : ''
   return {
     ok: true,
     restored: result.restored,
     mergedManifest: result.mergedManifest,
+    sessionLocalSkipped: skipped,
     installOk: install.installed,
     installedNames: install.installedNames,
     prunedNames: install.prunedNames,
     unportableDepsWarnings: warnings,
     bootErrors: droppedBundles,
-    message: `已恢复 ${result.restored} 个文件到 profile「${activeProfile()}」${result.mergedManifest ? '（package.json 已合并，未覆盖现有插件）' : ''}。${install.summary}${warnNote}${bootNote}。重启 DSH 后生效。`,
+    message: `已恢复 ${result.restored} 个文件到 profile「${activeProfile()}」${result.mergedManifest ? '（package.json 已合并，未覆盖现有插件）' : ''}。${install.summary}${skipNote}${warnNote}${bootNote}。重启 DSH 后生效。`,
   }
 }

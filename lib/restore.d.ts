@@ -1,4 +1,8 @@
-import type { FileEntry, ParsedBackup } from './backup.js';
+import { type FileEntry, type ParsedBackup } from './backup.js';
+/**
+ * The text a file entry becomes on disk. Defined in backup.ts so the size
+ * accounting there and the bytes written here can never drift apart.
+ */
 export declare function entryContent(file: FileEntry): string;
 /** Merge backup manifest into current: union bundles, overlay deps (current kept, backup wins conflicts). */
 export declare function mergeManifests(backupJson: Record<string, unknown>, current: Record<string, unknown>): Record<string, unknown>;
@@ -19,5 +23,7 @@ export interface RestoreResult {
     error?: string;
     /** Roll back every file written by this restore (call on install failure). */
     rollback?: () => void;
+    /** Backup paths deliberately not written (session-local records). */
+    skipped?: string[];
 }
 export declare function restoreBackup(root: string, backup: ParsedBackup): RestoreResult;

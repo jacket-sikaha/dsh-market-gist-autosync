@@ -15,11 +15,15 @@ import {
   rmSync,
 } from 'node:fs'
 import { resolve, dirname, sep, relative, isAbsolute } from 'node:path'
-import type { FileEntry, ParsedBackup } from './backup.js'
+import { entryText, type FileEntry, type ParsedBackup } from './backup.js'
+import { SESSION_LOCAL_RECORD } from './config.js'
 
+/**
+ * The text a file entry becomes on disk. Defined in backup.ts so the size
+ * accounting there and the bytes written here can never drift apart.
+ */
 export function entryContent(file: FileEntry): string {
-  if (file.json !== undefined) return JSON.stringify(file.json, null, 2) + "\n"
-  return (file.lines ?? []).join("\n")
+  return entryText(file)
 }
 
 /** Merge backup manifest into current: union bundles, overlay deps (current kept, backup wins conflicts). */
@@ -61,6 +65,8 @@ export interface RestoreResult {
   error?: string
   /** Roll back every file written by this restore (call on install failure). */
   rollback?: () => void
+  /** Backup paths deliberately not written (session-local records). */
+  skipped?: string[]
 }
 
 /**
@@ -139,6 +145,7 @@ export function restoreBackup(root: string, backup: ParsedBackup): RestoreResult
     }
   }
   let mergedManifest = false
+  const skipped: string[] = []
   const resolvedRoot = resolve(root)
   try {
     // The profile may not exist yet (fresh install, restoring into a new
@@ -146,6 +153,16 @@ export function restoreBackup(root: string, backup: ParsedBackup): RestoreResult
     // provably exists as a real directory.
     mkdirSync(resolvedRoot, { recursive: true })
     for (const file of backup.files) {
+      // The plugin-manager's run record names a pid on the machine that WROTE
+      // the backup. Writing it here would make this profile's next plugin
+      // install refuse with "process N is still running in this profile", so it
+      // is dropped on arrival — the one path a restore never writes, whatever
+      // the backup contains.
+      const normalizedPath = file.path.split('\\').join('/')
+      if (normalizedPath === SESSION_LOCAL_RECORD) {
+        skipped.push(normalizedPath)
+        continue
+      }
       const target = resolve(resolvedRoot, file.path)
       if (target !== resolvedRoot && !target.startsWith(resolvedRoot + sep)) {
         throw new Error(`不安全的备份路径: ${file.path}`)
@@ -170,5 +187,5 @@ export function restoreBackup(root: string, backup: ParsedBackup): RestoreResult
     rollback()
     return { ok: false, error: e instanceof Error ? e.message : String(e) }
   }
-  return { ok: true, restored: backup.files.length, mergedManifest, rollback }
+  return { ok: true, restored: previous.size, mergedManifest, rollback, skipped }
 }

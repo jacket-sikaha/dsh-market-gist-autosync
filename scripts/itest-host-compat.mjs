@@ -160,6 +160,30 @@ try {
   check('no token is reported when none is set', payload?.envTokenSet === false, String(payload?.envTokenSet))
   check('the profile package.json is left alone', JSON.parse((await import('node:fs')).readFileSync(join(profile, 'package.json'), 'utf8')).name === 'compat-profile')
 
+  // The UI's "查看备份内容" dialog: same route, read-only action. It has to work
+  // through the real host too, and its size numbers come from the same collector
+  // the upload path uses.
+  const preview = await call(port, { body: JSON.stringify({ action: 'previewBackup' }) })
+  let previewPayload
+  try {
+    previewPayload = JSON.parse(preview.text)
+  } catch {
+    previewPayload = undefined
+  }
+  check('POST previewBackup is answered 200', preview.status === 200, `status ${preview.status} body ${preview.text.slice(0, 200)}`)
+  check(
+    'the preview lists the manifest as a primary entry',
+    previewPayload?.preview?.entries?.[0]?.path === 'package.json' && previewPayload?.preview?.entries?.[0]?.tier === 'primary',
+    preview.text.slice(0, 200),
+  )
+  check('the preview reports the 1 MB ceiling', previewPayload?.limitBytes === 1048576, String(previewPayload?.limitBytes))
+  const previewLogs = await call(port, { body: JSON.stringify({ action: 'previewBackup', includePluginLogs: true }) })
+  check(
+    'the preview follows the caller log toggle',
+    JSON.parse(previewLogs.text)?.preview?.includePluginLogs === true,
+    previewLogs.text.slice(0, 200),
+  )
+
   const cross = await call(port, { body: JSON.stringify({ action: 'getConfig' }), origin: 'https://evil.example' })
   check('a cross-site Origin is refused 403', cross.status === 403, `status ${cross.status}`)
   check('the refusal carries no config', !cross.text.includes('scheduleIntervalUnit'), cross.text.slice(0, 120))

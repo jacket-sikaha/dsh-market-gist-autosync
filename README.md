@@ -54,9 +54,33 @@ dsh plugin --profile web add dsh-market-gist-autosync       # 网页版（dsh we
 
 `pnpm-lock.yaml` 不备份：lockfile 钉死的是某一台机器解析出来的依赖树，恢复时 `pnpm install` 会按 `package.json` 重新生成它，把它搬到对端只会和安装过程打架。早期版本有一个「同时备份 lockfile」开关，已随此次对齐移除。
 
+### 插件安装日志：默认不备份，可手动打开
+
+profile 里的 `.plugin-manager/` 是 DSH 宿主记录包操作的地方：`logs/operation-*/pnpm.log` 存着一次 `pnpm` 的完整 stdout + stderr（界面只显示最后 16 KB），`run.json` 记着正在运行的 pnpm 进程号。宿主自己不清理这些日志。
+
+一台装了二十来个插件的机器实测：141 份日志共 792.6 KB，而同一份 profile 的配置本身只有 46.4 KB —— **日志让备份体积翻 19 倍**。Gist 单文件上限是 1 MB，备份 887 KB、余量只剩 137 KB 时，再加一个插件就撞上限了。
+
+所以 `includePluginLogs` 默认关，勾选后才把 `.plugin-manager/logs` 一起上传。这个开关只影响**收集**，不影响恢复：恢复按备份里实际有什么写，因为备份可能来自另一台机器、那边的开关和你这边不是一个值。两条硬规则：
+
+- `run.json` **永不备份、永不写回**：它记的是写备份那台机器上的进程号，写回来会让本机下次装插件报「process N is still running」
+- 开关两侧都不破坏互通：dshmarket 既收集也接受 `logs/`，所以带日志的备份在它那边照样能恢复，它写的带日志备份在这边也能恢复
+
+### 设置页
+
+「备份设置」一屏管住所有可写项，底部**一个**「保存设置」同时保存 Token、Gist ID、备份内容（日志开关）与定时设置。`saveConfig` 是部分合并，所以这个请求会把需要落盘的字段一次带全 —— 少带一个，那一项就只停留在界面上。
+
+「查看备份内容」打开弹窗，列出下一次备份会包含哪些文件，按两类分组：
+
+- **主要**：`package.json`、`cordis.patch.yml`、`cordis.yml`、`pnpm-workspace.yaml` —— 决定装哪些插件、怎么加载；缺一项，恢复出来的 profile 就不是原样
+- **次要**：其余配置（打开日志开关后含安装日志，带「日志」标签），写回也不改变行为
+
+底部给出合计体积、1 MB 上限与剩余余量。数据来自 `previewProfileBackup()` —— 与真正备份同一条收集路径，所以看到的数字就是上传时的数字。
+
+「测试连接」与「查看备份内容」都按**界面上当前的值**工作，不看是否已保存：刚粘贴的 Token 可以直接测，刚打开的日志开关在预览里也立刻生效。
+
 - `package.json` 以 JSON 对象形式存储，其余文件以行数组形式存储
 - 打包为 `dsh-profile-backup.json`（`format: "dsh-profile-backup"`, `version: 0.2`），上传前做与 dshmarket 对齐的严格结构校验
-- 上限：256 个文件 / 1MB（GitHub Gist 限制）
+- 上限：256 个文件 / 1MB（GitHub Gist 限制）。上传前会拦住超限备份并点名最大贡献者；读取时还会检查 GitHub 返回的 `truncated` 标记 —— 超过 1 MB 的文件只会拿到前一部分，那种情况直接报「备份过大」，而不是让人以为 JSON 坏了
 
 ### 备份端剥离机器本地依赖
 
@@ -96,15 +120,16 @@ dsh 启动加载器按 `dsh.profile.bundles` 的顺序加载插件，**遇到第
 | `scheduleEnabled` | `false` | 是否定时备份（仅 DSH 运行期间执行） |
 | `scheduleIntervalValue` | `24` | 周期间隔数值（≥1） |
 | `scheduleIntervalUnit` | `"hour"` | 周期单位：`"hour"` / `"minute"` |
+| `includePluginLogs` | `false` | 备份里是否附带 `.plugin-manager/logs` 的 pnpm 安装日志（一份 5–25 KB，装插件多的 profile 可达 140+ 份 / 790 KB） |
 
-备份内容的排除清单不可配置（与 dshmarket 的 `SKIP_NAMES` 保持一致）；旧版本 `config.json` 里残留的 `includeLock` 字段会在读取时被丢弃。
+备份内容的排除清单不可配置（与 dshmarket 的 `SKIP_NAMES` 保持一致）；旧版本 `config.json` 里残留的 `includeLock` 字段会在读取时被丢弃。唯一可配的是 `includePluginLogs`（默认关），而 `run.json` 无论如何都不备份、也不写回。
 
 ## 恢复
 
 设置页「恢复」区输入 Gist id 或 URL（留空用已保存的 gistId）：
 
 1. 下载并严格校验备份结构：`format` 必须是 `dsh-profile-backup`、`version` 必须是 `0.2`、必须含 `package.json`、路径安全（非绝对、无 `..`、不含排除目录、无重复）、总大小 ≤ 2 MB
-2. 原子写回：先写临时文件再替换，任一文件失败则回滚全部。中间目录逐段创建，每段都必须是真实目录 —— 父目录是符号链接/目录联接时拒绝写入，避免文件被引到 profile 之外
+2. 原子写回：先写临时文件再替换，任一文件失败则回滚全部。中间目录逐段创建，每段都必须是真实目录 —— 父目录是符号链接/目录联接时拒绝写入，避免文件被引到 profile 之外。备份里若带 `.plugin-manager/logs` 日志会照原样写回，唯独 `run.json` 一律跳过（记的是来源机器的进程号），跳过项会在结果里列出
 3. 合并 `package.json` 依赖（保留已装插件；`bundles` 取并集）
 4. 剔除指向本机不存在路径的 `link:` / `file:` 本地依赖（无法安装，留着会连累引用它的 bundle）
 5. 自动 `pnpm install` 缺失依赖（实时进度）；全部失败则回滚恢复
@@ -139,6 +164,7 @@ pnpm build   # Vite 8 (rolldown) 把 host 半打包为单文件 ESM 到 lib/
 | `itest-profile-detect.mjs` | 当前 profile 识别（desktopProfiles / argv / env / 兜底） |
 | `itest-boot-check.mjs` | 启动预检：无法解析、补丁缺失/损坏的 bundle 被捕获并移除；`!!js` 补丁不被误判；「未知」不被当成「缺失」 |
 | `itest-backup-strip.mjs` | 备份端剥离机器本地依赖；本机 profile 不被改写；并集合并保证本机不丢东西 |
+| `itest-plugin-logs.mjs` | 插件安装日志开关：默认不收、打开后收 `logs/` 但不收 `run.json`；严格校验放行带日志的备份（dshmarket 会写）；恢复按备份内容写回并跳过 `run.json` |
 | `itest-restore-report.mjs` | 恢复报告不自相矛盾（被剔除的依赖不再被要求手动重装） |
 | `diff-gists.mjs` | 开发工具：对比两个 Gist 备份的文件树与内容差异 |
 

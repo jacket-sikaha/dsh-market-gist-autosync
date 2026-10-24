@@ -12,6 +12,9 @@ import {
   MAX_BACKUP_BYTES,
   MAX_BACKUP_FILES,
   PROFILE_SKIP,
+  SESSION_LOCAL_DIR,
+  SESSION_LOCAL_LOGS,
+  SESSION_LOCAL_RECORD,
   activeProfile,
   profileRoot,
 } from './config.js'
@@ -123,13 +126,27 @@ export interface ParsedBackup {
   files: FileEntry[]
 }
 
-function profileFiles(root: string, dir: string, out: string[]): void {
+/**
+ * Collect the profile's files, relative and '/'-separated.
+ *
+ * The host plugin-manager's scratch area is handled here rather than through
+ * PROFILE_SKIP (which also gates what a RESTORE accepts): its install logs
+ * travel only when `includePluginLogs` is on, and its run record — a pid
+ * belonging to THIS machine — never travels at all.
+ */
+function profileFiles(root: string, dir: string, out: string[], includePluginLogs: boolean): void {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (PROFILE_SKIP.has(entry.name) || /\.bak\b/.test(entry.name)) continue
     const abs = resolve(dir, entry.name)
     if (entry.isSymbolicLink()) continue
-    if (entry.isDirectory()) profileFiles(root, abs, out)
-    else if (entry.isFile()) out.push(resolve(abs).slice(root.length + 1).split(sep).join('/'))
+    const rel = abs.slice(root.length + 1).split(sep).join('/')
+    if (rel === SESSION_LOCAL_RECORD) continue
+    if (rel === SESSION_LOCAL_DIR) {
+      if (entry.isDirectory() && includePluginLogs) profileFiles(root, abs, out, includePluginLogs)
+      continue
+    }
+    if (entry.isDirectory()) profileFiles(root, abs, out, includePluginLogs)
+    else if (entry.isFile()) out.push(rel)
     if (out.length > MAX_BACKUP_FILES) throw new Error(`profile has more than ${MAX_BACKUP_FILES} configuration files`)
   }
 }
@@ -141,14 +158,22 @@ export interface CollectResult {
   strippedDeps: UnportableDep[]
   /** Bundle rows dropped with them (a row with no installable package). */
   strippedBundles: string[]
+  /** Bytes the plugin-manager's install logs contribute to the serialized backup. */
+  pluginLogBytes: number
 }
 
-export function collectProfileBackup(): CollectResult {
+/**
+ * @param options.includePluginLogs Also collect the host plugin-manager's pnpm
+ * install logs (`.plugin-manager/logs`). Off by default: they are this machine's
+ * install output, and a busy profile carries hundreds of KB of them.
+ */
+export function collectProfileBackup(options?: { includePluginLogs?: boolean }): CollectResult {
+  const includePluginLogs = options?.includePluginLogs === true
   const root = resolve(profileRoot())
   const manifestFile = resolve(root, 'package.json')
   if (!existsSync(manifestFile)) throw new Error('profile package.json is missing')
   const relPaths: string[] = []
-  profileFiles(root, root, relPaths)
+  profileFiles(root, root, relPaths, includePluginLogs)
   let strippedDeps: UnportableDep[] = []
   let strippedBundles: string[] = []
   const files: FileEntry[] = relPaths.sort().map((path) => {
@@ -163,7 +188,25 @@ export function collectProfileBackup(): CollectResult {
   })
   if (!files.some((f) => f.path === 'package.json')) throw new Error('profile package.json is missing')
   const containsSecrets = files.some((f) => /\.credentials|\.env|secrets?/i.test(f.path))
-  return { files, containsSecrets, strippedDeps, strippedBundles }
+  const pluginLogBytes = files.reduce((sum, f) => (f.path.startsWith(`${SESSION_LOCAL_LOGS}/`) ? sum + Buffer.byteLength(entryText(f)) : sum), 0)
+  return { files, containsSecrets, strippedDeps, strippedBundles, pluginLogBytes }
+}
+
+/** The exact text a file entry becomes in the serialized backup (and on disk). */
+export function entryText(file: FileEntry): string {
+  if (file.json !== undefined) return JSON.stringify(file.json, null, 2) + '\n'
+  return (file.lines ?? []).join('\n')
+}
+
+/**
+ * The largest entries in a serialized backup, so a size error can name what to
+ * drop instead of only stating the total.
+ */
+export function largestBackupEntries(files: FileEntry[], limit = 3): { path: string; bytes: number }[] {
+  return files
+    .map((file) => ({ path: file.path, bytes: Buffer.byteLength(entryText(file)) }))
+    .sort((a, b) => b.bytes - a.bytes)
+    .slice(0, limit)
 }
 
 /** Serialize the backup with 2-space indent so it reads well on the Gist web UI. */
@@ -178,6 +221,64 @@ export function buildBackupEnvelope(files: FileEntry[]): ParsedBackup {
     createdAt: new Date().toISOString(),
     profile: activeProfile(),
     files,
+  }
+}
+
+/**
+ * Files that decide what a restore actually installs and how the profile boots.
+ * Everything else is optional config: restoring it changes no behaviour, which is
+ * why the UI can list it separately instead of pushing one flat 100-line list.
+ */
+const PRIMARY_BACKUP_PATHS = new Set([
+  'package.json',
+  'cordis.patch.yml',
+  'cordis.yml',
+  'pnpm-workspace.yaml',
+])
+
+export type BackupFileTier = 'primary' | 'secondary'
+
+export function backupFileTier(path: string): BackupFileTier {
+  return PRIMARY_BACKUP_PATHS.has(path) ? 'primary' : 'secondary'
+}
+
+export interface BackupPreviewEntry {
+  path: string
+  bytes: number
+  tier: BackupFileTier
+  /** Host install log rather than profile config — droppable via the toggle. */
+  pluginLog: boolean
+}
+
+export interface BackupPreview {
+  profileName: string
+  fileCount: number
+  /** Serialized bytes, i.e. what the Gist upload would actually weigh. */
+  totalBytes: number
+  includePluginLogs: boolean
+  pluginLogBytes: number
+  entries: BackupPreviewEntry[]
+}
+
+/**
+ * What the next backup would contain, without uploading anything. Same collection
+ * path as doBackup, so the sizes shown are the sizes that would be sent.
+ */
+export function previewProfileBackup(options?: { includePluginLogs?: boolean }): BackupPreview {
+  const collected = collectProfileBackup(options)
+  const entries: BackupPreviewEntry[] = collected.files.map((file) => ({
+    path: file.path,
+    bytes: Buffer.byteLength(entryText(file)),
+    tier: backupFileTier(file.path),
+    pluginLog: file.path.startsWith(`${SESSION_LOCAL_LOGS}/`),
+  }))
+  return {
+    profileName: activeProfile(),
+    fileCount: entries.length,
+    totalBytes: Buffer.byteLength(serializeBackup(buildBackupEnvelope(collected.files)), 'utf8'),
+    includePluginLogs: options?.includePluginLogs === true,
+    pluginLogBytes: collected.pluginLogBytes,
+    entries,
   }
 }
 
