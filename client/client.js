@@ -219,12 +219,13 @@ window.__ModuleLoader__.load({
       return total;
     }
 
-    // 备份内容预览弹窗。主要 = 决定装哪些插件、怎么加载；次要 = 其他配置，
-    // 写回也不会改变行为 —— 所以分两组，别把 100 多个文件拍成一长条。
+    // 备份内容展示弹窗。主要 = 决定装哪些插件、怎么加载；备份插件列表 = 这些
+    // 插件各自的名字与版本约束（恢复时就按它装）；次要只在真有其他配置时出现。
     function PreviewDialog(props) {
       var p = props.preview;
       var limit = props.limitBytes || 1048576;
       var rows = Array.isArray(p.entries) ? p.entries : [];
+      var plugins = Array.isArray(p.plugins) ? p.plugins : [];
       var primary = rows.filter(function (r) {
         return r.tier === "primary";
       });
@@ -233,7 +234,8 @@ window.__ModuleLoader__.load({
       });
       var rest = Math.max(0, limit - p.totalBytes);
 
-      function group(key, title, items, note) {
+      // 分组统一成 {label, value} 行：文件组的右侧是体积，插件组的右侧是版本。
+      function group(key, title, items, note, summary) {
         return React.createElement(
           "div",
           { key: key, style: { marginBottom: 16 } },
@@ -255,7 +257,7 @@ window.__ModuleLoader__.load({
             React.createElement(
               "span",
               { style: { fontSize: 11, color: "#8b93a1" } },
-              "共 " + items.length + " 项 · " + fmtBytes(sumBytes(items)),
+              summary || "共 " + items.length + " 项",
             ),
           ),
           note
@@ -282,7 +284,7 @@ window.__ModuleLoader__.load({
                 return React.createElement(
                   "div",
                   {
-                    key: r.path,
+                    key: r.label,
                     style: {
                       display: "flex",
                       gap: 8,
@@ -303,23 +305,8 @@ window.__ModuleLoader__.load({
                           "ui-monospace, SFMono-Regular, Menlo, monospace",
                       },
                     },
-                    r.path,
+                    r.label,
                   ),
-                  r.pluginLog
-                    ? React.createElement(
-                        "span",
-                        {
-                          style: {
-                            fontSize: 10,
-                            color: "#a16207",
-                            background: "#fef3c7",
-                            borderRadius: 4,
-                            padding: "0 4px",
-                          },
-                        },
-                        "日志",
-                      )
-                    : null,
                   React.createElement(
                     "span",
                     {
@@ -330,11 +317,23 @@ window.__ModuleLoader__.load({
                         fontVariantNumeric: "tabular-nums",
                       },
                     },
-                    fmtBytes(r.bytes),
+                    r.value,
                   ),
                 );
               }),
         );
+      }
+
+      function fileRows(items) {
+        return items.map(function (r) {
+          return { label: r.path, value: fmtBytes(r.bytes) };
+        });
+      }
+
+      function pluginRows(items) {
+        return items.map(function (r) {
+          return { label: r.name, value: r.version || "—" };
+        });
       }
 
       return React.createElement(
@@ -383,7 +382,7 @@ window.__ModuleLoader__.load({
             React.createElement(
               "div",
               { style: { flex: 1, fontSize: 13, fontWeight: 600, color: "#1f2328" } },
-              "备份内容预览",
+              "备份内容展示",
             ),
             React.createElement(
               "div",
@@ -415,17 +414,26 @@ window.__ModuleLoader__.load({
             group(
               "primary",
               "主要",
-              primary,
+              fileRows(primary),
               "决定装哪些插件、怎么加载。这几项缺一个，恢复出来的 profile 就不是原样。",
+              "共 " + primary.length + " 项 · " + fmtBytes(sumBytes(primary)),
             ),
             group(
-              "secondary",
-              "次要",
-              secondary,
-              p.includePluginLogs
-                ? "其他配置与安装日志。日志可以关掉（下方开关）来缩小体积，恢复时仍按备份内容原样写回。"
-                : "其他配置，写回也不会改变行为。",
+              "plugins",
+              "备份插件列表",
+              pluginRows(plugins),
+              "恢复时按这些版本约束重新安装；没有版本号的是宿主自带的插件。",
+              "共 " + plugins.length + " 个插件",
             ),
+            secondary.length > 0
+              ? group(
+                  "secondary",
+                  "次要",
+                  fileRows(secondary),
+                  "其他配置，写回也不会改变行为。",
+                  "共 " + secondary.length + " 项 · " + fmtBytes(sumBytes(secondary)),
+                )
+              : null,
           ),
           React.createElement(
             "div",
@@ -441,7 +449,9 @@ window.__ModuleLoader__.load({
             React.createElement(
               "div",
               { style: { flex: 1, fontSize: 11, color: "#8b93a1" } },
-              "合计 " +
+              "共 " +
+                rows.length +
+                " 个文件 · 合计 " +
                 fmtBytes(p.totalBytes) +
                 " / 上限 " +
                 fmtBytes(limit) +
@@ -464,7 +474,6 @@ window.__ModuleLoader__.load({
         scheduleEnabled: false,
         scheduleIntervalValue: "24",
         scheduleIntervalUnit: "hour",
-        includePluginLogs: false,
         uploads: [],
         envTokenSet: false,
         activeProfile: "desktop",
@@ -506,7 +515,6 @@ window.__ModuleLoader__.load({
                 scheduleIntervalValue: String(c.scheduleIntervalValue || 24),
                 scheduleIntervalUnit:
                   c.scheduleIntervalUnit === "minute" ? "minute" : "hour",
-                includePluginLogs: c.includePluginLogs === true,
                 uploads: Array.isArray(c.uploads) ? c.uploads : [],
                 envTokenSet: !!r.envTokenSet,
                 activeProfile: r.activeProfile || "desktop",
@@ -520,7 +528,6 @@ window.__ModuleLoader__.load({
                   scheduleIntervalValue: String(c.scheduleIntervalValue || 24),
                   scheduleIntervalUnit:
                     c.scheduleIntervalUnit === "minute" ? "minute" : "hour",
-                  includePluginLogs: c.includePluginLogs === true,
                 },
               });
             } else {
@@ -604,7 +611,6 @@ window.__ModuleLoader__.load({
             scheduleIntervalValue:
               parseInt(state[0].scheduleIntervalValue, 10) || 24,
             scheduleIntervalUnit: state[0].scheduleIntervalUnit,
-            includePluginLogs: state[0].includePluginLogs === true,
           },
         })
           .then(function (r) {
@@ -618,7 +624,6 @@ window.__ModuleLoader__.load({
                   scheduleEnabled: state[0].scheduleEnabled,
                   scheduleIntervalValue: String(state[0].scheduleIntervalValue),
                   scheduleIntervalUnit: state[0].scheduleIntervalUnit,
-                  includePluginLogs: state[0].includePluginLogs === true,
                 }),
               });
             }
@@ -630,13 +635,10 @@ window.__ModuleLoader__.load({
       }
 
       // 查看当前备份内容：走 host 的只读预览（与真正备份同一条收集路径），
-      // 所以这里的体积就是上传时会占的体积。日志开关按**界面上当前的值**传，
-      // 否则刚打开开关、还没保存就点预览，会看不到日志而以为开关没生效。
+      // 所以这里的体积就是上传时会占的体积。
       function openPreview() {
         setState({ busy: true });
-        rpc("previewBackup", {
-          includePluginLogs: state[0].includePluginLogs === true,
-        })
+        rpc("previewBackup", {})
           .then(function (r) {
             setState({ busy: false });
             if (r.ok && r.preview) {
@@ -787,8 +789,7 @@ window.__ModuleLoader__.load({
 
       // 未保存修改检测：当前值与 baseline（上次保存/加载时的快照）对比
       var b = s.baseline || {};
-      var varsDirty = s.gistToken !== b.gistToken || s.gistId !== b.gistId ||
-        s.includePluginLogs !== b.includePluginLogs;
+      var varsDirty = s.gistToken !== b.gistToken || s.gistId !== b.gistId;
       var schedDirty =
         s.scheduleEnabled !== b.scheduleEnabled ||
         String(s.scheduleIntervalValue) !== String(b.scheduleIntervalValue) ||
@@ -970,7 +971,7 @@ window.__ModuleLoader__.load({
             {
               style: { flex: 1, fontSize: 11, color: "#8b93a1", lineHeight: 1.6 },
             },
-            "备份 profile 里的配置文件，不含 node_modules、pnpm-lock.yaml、*.bak 与符号链接。",
+            "备份 profile 里的配置文件，不含 node_modules、pnpm-lock.yaml、*.bak、符号链接与隐藏目录。",
           ),
           React.createElement(
             Button,
@@ -978,30 +979,9 @@ window.__ModuleLoader__.load({
             "查看备份内容",
           ),
         ),
-        // 排除清单不可配置（与 dshmarket 一致），唯一可配的是「附带安装日志」：
-        // .plugin-manager/logs 上游既收集也接受，所以这个开关只影响备份体积，
-        // 不影响可恢复性 —— 与已被移除的 includeLock 不是一个性质。
-        React.createElement(Toggle, {
-          label: "备份里附带插件安装日志",
-          value: s.includePluginLogs === true,
-          onChange: function (v) {
-            setState({ includePluginLogs: v });
-          },
-        }),
-        React.createElement(
-          "p",
-          {
-            style: {
-              margin: "0 0 12px",
-              fontSize: 11,
-              color: "#8b93a1",
-              lineHeight: 1.7,
-            },
-          },
-          s.includePluginLogs === true
-            ? "打开状态：日志会一起上传（一次安装 5–25 KB，多的能有近 800 KB，接近 1 MB 上限）。恢复时按备份内容原样写回。"
-            : "默认关闭。打开才有日志，装了上百个插件时会让备份接近 1 MB 上限。",
-        ),
+        // 排除清单不可配置：隐藏目录（含宿主的 .plugin-manager 安装日志）、
+        // node_modules、pnpm-lock.yaml、*.bak、符号链接都不进备份，与 dshmarket
+        // 1.70.1+ 的遍历规则一致，所以备份里没有需要用户再决定的项。
 
         // ===== 执行 =====
         React.createElement(SectionTitle, { dirty: schedDirty }, "执行"),

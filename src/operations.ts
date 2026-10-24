@@ -83,14 +83,12 @@ export async function doBackup(
   let containsSecrets = false
   let strippedDeps: UnportableDep[] = []
   let strippedBundles: string[] = []
-  let pluginLogBytes = 0
   try {
-    const collected = collectProfileBackup({ includePluginLogs: cfg.includePluginLogs })
+    const collected = collectProfileBackup()
     files = collected.files
     containsSecrets = collected.containsSecrets
     strippedDeps = collected.strippedDeps
     strippedBundles = collected.strippedBundles
-    pluginLogBytes = collected.pluginLogBytes
   } catch (e) {
     return err('other', e instanceof Error ? e.message : String(e))
   }
@@ -98,11 +96,10 @@ export async function doBackup(
   const content = serializeBackup(backup)
   const bytes = Buffer.byteLength(content)
   if (bytes > GIST_MAX_BYTES) {
-    // Name what to drop. "Too large" alone leaves the user guessing, and the
-    // usual culprit is one switch away from being fixed.
-    const detail = pluginLogBytes > 0
-      ? `；其中 ${(pluginLogBytes / 1024).toFixed(0)}KB 是插件安装日志（.plugin-manager/logs）—— 关掉「备份里附带安装日志」就能把这部分去掉`
-      : `；占用最大的是 ${largestBackupEntries(files).map((e) => `${e.path}（${(e.bytes / 1024).toFixed(1)}KB）`).join('、')}`
+    // Name what is taking the space. "Too large" alone leaves the user guessing,
+    // and the exclusion list is not configurable — so the answer has to be
+    // "these two files are the whole backup, shrink them".
+    const detail = `；占用最大的是 ${largestBackupEntries(files).map((e) => `${e.path}（${(e.bytes / 1024).toFixed(1)}KB）`).join('、')}`
     return err(
       'too_large',
       `备份 ${(bytes / 1024).toFixed(0)}KB 超过 GitHub Gist 单文件 1MB 上限${detail}。GitHub 读取时会截断超过 1MB 的文件，恢复端只能拿到半份 JSON，所以这里不会上传。`,

@@ -146,6 +146,17 @@ try {
   }
   check('the plugin mounts into the real context', true)
 
+  // A config.json written by an older version still carries switches that no
+  // longer exist (`includePluginLogs` went away when the collector started
+  // skipping every hidden directory; `includeLock` when pnpm-lock.yaml joined
+  // PROFILE_SKIP). Read must drop them, or the UI would show a switch that does
+  // nothing and every save would copy the dead key forward.
+  mkdirSync(join(root, 'gist-autosync'), { recursive: true })
+  writeFileSync(
+    join(root, 'gist-autosync', 'config.json'),
+    JSON.stringify({ gistId: 'legacy-abc', scheduleIntervalValue: 6, includePluginLogs: true, includeLock: true }, null, 2),
+  )
+
   const ok = await call(port, { body: JSON.stringify({ action: 'getConfig' }) })
   let payload
   try {
@@ -158,6 +169,9 @@ try {
   check('the answer carries the config the UI reads', payload?.config?.scheduleIntervalUnit === 'hour', JSON.stringify(payload?.config ?? null).slice(0, 200))
   check('the answer reports the active profile', payload?.activeProfile === 'compat', String(payload?.activeProfile))
   check('no token is reported when none is set', payload?.envTokenSet === false, String(payload?.envTokenSet))
+  check('a legacy includePluginLogs key is not echoed back', payload?.config !== undefined && !('includePluginLogs' in payload.config), JSON.stringify(Object.keys(payload?.config ?? {})))
+  check('a legacy includeLock key is not echoed back', payload?.config !== undefined && !('includeLock' in payload.config))
+  check('the real settings in that file still come back', payload?.config?.scheduleIntervalValue === 6, String(payload?.config?.scheduleIntervalValue))
   check('the profile package.json is left alone', JSON.parse((await import('node:fs')).readFileSync(join(profile, 'package.json'), 'utf8')).name === 'compat-profile')
 
   // The UI's "查看备份内容" dialog: same route, read-only action. It has to work
@@ -177,11 +191,11 @@ try {
     preview.text.slice(0, 200),
   )
   check('the preview reports the 1 MB ceiling', previewPayload?.limitBytes === 1048576, String(previewPayload?.limitBytes))
-  const previewLogs = await call(port, { body: JSON.stringify({ action: 'previewBackup', includePluginLogs: true }) })
+  const previewExtra = await call(port, { body: JSON.stringify({ action: 'previewBackup', includePluginLogs: true }) })
   check(
-    'the preview follows the caller log toggle',
-    JSON.parse(previewLogs.text)?.preview?.includePluginLogs === true,
-    previewLogs.text.slice(0, 200),
+    'a stale log toggle in the body is ignored, not echoed',
+    JSON.parse(previewExtra.text)?.preview?.includePluginLogs === undefined,
+    previewExtra.text.slice(0, 200),
   )
 
   const cross = await call(port, { body: JSON.stringify({ action: 'getConfig' }), origin: 'https://evil.example' })

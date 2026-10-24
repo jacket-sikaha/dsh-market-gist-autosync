@@ -59,8 +59,6 @@ export {
 export {
   initProfileContext,
   activeProfile,
-  SESSION_LOCAL_DIR,
-  SESSION_LOCAL_LOGS,
   SESSION_LOCAL_RECORD,
 } from "./config.js";
 export {
@@ -387,9 +385,6 @@ async function apply(ctx: any, rawConfig: any) {
           const incoming = (body.config as Partial<GistBackupConfig>) || {};
           const cfg = { ...readBackupConfig(), ...incoming };
           cfg.scheduleEnabled = Boolean(cfg.scheduleEnabled);
-          // Must be a real boolean: the string "false" is truthy, and this flag
-          // decides whether hundreds of KB of install logs ride along.
-          cfg.includePluginLogs = cfg.includePluginLogs === true;
           cfg.scheduleIntervalValue = Math.max(
             1,
             Number(cfg.scheduleIntervalValue) || 24,
@@ -402,18 +397,12 @@ async function apply(ctx: any, rawConfig: any) {
         } else if (action === "previewBackup") {
           // Read-only: the UI opens a dialog listing what the next backup would
           // weigh, so a size problem shows up before an upload — and so "why is
-          // my backup 800 KB" has a per-file answer instead of a guess. The log
-          // toggle comes from the caller when present: the dialog must show what
-          // is on screen, not the last saved value.
-          const previewLogs =
-            typeof body.includePluginLogs === "boolean"
-              ? body.includePluginLogs
-              : readBackupConfig().includePluginLogs;
+          // my backup 800 KB" has a per-file answer instead of a guess.
           try {
             sendJson(response, 200, {
               ok: true,
               limitBytes: GIST_MAX_BYTES,
-              preview: previewProfileBackup({ includePluginLogs: previewLogs }),
+              preview: previewProfileBackup(),
             });
           } catch (error) {
             sendJson(response, 200, err("other", (error as Error).message));

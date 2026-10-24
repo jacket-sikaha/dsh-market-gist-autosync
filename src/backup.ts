@@ -5,6 +5,7 @@
  * validatedBackup).
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import type { Dirent } from 'node:fs'
 import { resolve, isAbsolute, sep } from 'node:path'
 import {
   BACKUP_FORMAT,
@@ -12,9 +13,6 @@ import {
   MAX_BACKUP_BYTES,
   MAX_BACKUP_FILES,
   PROFILE_SKIP,
-  SESSION_LOCAL_DIR,
-  SESSION_LOCAL_LOGS,
-  SESSION_LOCAL_RECORD,
   activeProfile,
   profileRoot,
 } from './config.js'
@@ -129,24 +127,32 @@ export interface ParsedBackup {
 /**
  * Collect the profile's files, relative and '/'-separated.
  *
- * The host plugin-manager's scratch area is handled here rather than through
- * PROFILE_SKIP (which also gates what a RESTORE accepts): its install logs
- * travel only when `includePluginLogs` is on, and its run record — a pid
- * belonging to THIS machine — never travels at all.
+ * Hidden directories are skipped wholesale: `.plugin-manager` (the host's pnpm
+ * install logs — one real profile carried 141 of them, 790 KB of an 887 KB
+ * backup), `.dsh-market`, `.git`. None of it is configuration, and dshmarket
+ * 1.70.1+ walks a profile exactly this way (#972). Hidden FILES still travel,
+ * because `.env` and `.npmrc` are real config.
+ *
+ * `.bak` leftovers and symlinks are skipped too: a backup is a snapshot of this
+ * profile's own files, not of whatever a link happens to point at.
  */
-function profileFiles(root: string, dir: string, out: string[], includePluginLogs: boolean): void {
+/**
+ * The single skip rule for the walk below. Keeping it in one place means the
+ * rules documented in the README and the ones the code applies cannot drift.
+ */
+function skipEntry(entry: Dirent): boolean {
+  if (PROFILE_SKIP.has(entry.name)) return true
+  if (/\.bak\b/.test(entry.name)) return true
+  if (entry.isDirectory() && entry.name.startsWith('.')) return true
+  return entry.isSymbolicLink()
+}
+
+function profileFiles(root: string, dir: string, out: string[]): void {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (PROFILE_SKIP.has(entry.name) || /\.bak\b/.test(entry.name)) continue
+    if (skipEntry(entry)) continue
     const abs = resolve(dir, entry.name)
-    if (entry.isSymbolicLink()) continue
-    const rel = abs.slice(root.length + 1).split(sep).join('/')
-    if (rel === SESSION_LOCAL_RECORD) continue
-    if (rel === SESSION_LOCAL_DIR) {
-      if (entry.isDirectory() && includePluginLogs) profileFiles(root, abs, out, includePluginLogs)
-      continue
-    }
-    if (entry.isDirectory()) profileFiles(root, abs, out, includePluginLogs)
-    else if (entry.isFile()) out.push(rel)
+    if (entry.isDirectory()) profileFiles(root, abs, out)
+    else if (entry.isFile()) out.push(abs.slice(root.length + 1).split(sep).join('/'))
     if (out.length > MAX_BACKUP_FILES) throw new Error(`profile has more than ${MAX_BACKUP_FILES} configuration files`)
   }
 }
@@ -158,22 +164,16 @@ export interface CollectResult {
   strippedDeps: UnportableDep[]
   /** Bundle rows dropped with them (a row with no installable package). */
   strippedBundles: string[]
-  /** Bytes the plugin-manager's install logs contribute to the serialized backup. */
-  pluginLogBytes: number
 }
 
-/**
- * @param options.includePluginLogs Also collect the host plugin-manager's pnpm
- * install logs (`.plugin-manager/logs`). Off by default: they are this machine's
- * install output, and a busy profile carries hundreds of KB of them.
- */
-export function collectProfileBackup(options?: { includePluginLogs?: boolean }): CollectResult {
-  const includePluginLogs = options?.includePluginLogs === true
+/** Collect this profile's configuration. Nothing about it is configurable: the
+ * exclusion list matches dshmarket's, so both tools back up the same files. */
+export function collectProfileBackup(): CollectResult {
   const root = resolve(profileRoot())
   const manifestFile = resolve(root, 'package.json')
   if (!existsSync(manifestFile)) throw new Error('profile package.json is missing')
   const relPaths: string[] = []
-  profileFiles(root, root, relPaths, includePluginLogs)
+  profileFiles(root, root, relPaths)
   let strippedDeps: UnportableDep[] = []
   let strippedBundles: string[] = []
   const files: FileEntry[] = relPaths.sort().map((path) => {
@@ -188,8 +188,7 @@ export function collectProfileBackup(options?: { includePluginLogs?: boolean }):
   })
   if (!files.some((f) => f.path === 'package.json')) throw new Error('profile package.json is missing')
   const containsSecrets = files.some((f) => /\.credentials|\.env|secrets?/i.test(f.path))
-  const pluginLogBytes = files.reduce((sum, f) => (f.path.startsWith(`${SESSION_LOCAL_LOGS}/`) ? sum + Buffer.byteLength(entryText(f)) : sum), 0)
-  return { files, containsSecrets, strippedDeps, strippedBundles, pluginLogBytes }
+  return { files, containsSecrets, strippedDeps, strippedBundles }
 }
 
 /** The exact text a file entry becomes in the serialized backup (and on disk). */
@@ -246,8 +245,47 @@ export interface BackupPreviewEntry {
   path: string
   bytes: number
   tier: BackupFileTier
-  /** Host install log rather than profile config — droppable via the toggle. */
-  pluginLog: boolean
+}
+
+export interface BackupPlugin {
+  name: string
+  /**
+   * The spec the manifest declares — exactly what `pnpm install` resolves on
+   * restore, so `^1.70.1` stays a range rather than being flattened to a
+   * version. Empty when the bundle is provided by the host and not listed in
+   * `dependencies`.
+   */
+  version: string
+}
+
+/**
+ * The plugins this backup actually carries: the declared bundles (what the
+ * profile boots) joined with their dependency specs. Dependencies that are not
+ * bundles are left out on purpose — those are the plugins' own dependencies,
+ * not plugins, and listing them would turn a 30-line answer into a 200-line one.
+ */
+export function backupPlugins(files: FileEntry[]): BackupPlugin[] {
+  const manifest = files.find((file) => file.path === 'package.json')?.json
+  if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) return []
+  const record = manifest as Record<string, unknown>
+  const dsh = (record.dsh !== null && typeof record.dsh === 'object' && !Array.isArray(record.dsh)
+    ? record.dsh
+    : {}) as Record<string, unknown>
+  const profile = (dsh.profile !== null && typeof dsh.profile === 'object' && !Array.isArray(dsh.profile)
+    ? dsh.profile
+    : {}) as Record<string, unknown>
+  const bundles = Array.isArray(profile.bundles)
+    ? profile.bundles.filter((name): name is string => typeof name === 'string')
+    : []
+  const dependencies = (record.dependencies !== null && typeof record.dependencies === 'object' && !Array.isArray(record.dependencies)
+    ? record.dependencies
+    : {}) as Record<string, unknown>
+  return bundles
+    .map((name) => ({
+      name,
+      version: typeof dependencies[name] === 'string' ? (dependencies[name] as string) : '',
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name))
 }
 
 export interface BackupPreview {
@@ -255,30 +293,28 @@ export interface BackupPreview {
   fileCount: number
   /** Serialized bytes, i.e. what the Gist upload would actually weigh. */
   totalBytes: number
-  includePluginLogs: boolean
-  pluginLogBytes: number
   entries: BackupPreviewEntry[]
+  /** Plugins a restore would reinstall, name + declared spec. */
+  plugins: BackupPlugin[]
 }
 
 /**
  * What the next backup would contain, without uploading anything. Same collection
  * path as doBackup, so the sizes shown are the sizes that would be sent.
  */
-export function previewProfileBackup(options?: { includePluginLogs?: boolean }): BackupPreview {
-  const collected = collectProfileBackup(options)
+export function previewProfileBackup(): BackupPreview {
+  const collected = collectProfileBackup()
   const entries: BackupPreviewEntry[] = collected.files.map((file) => ({
     path: file.path,
     bytes: Buffer.byteLength(entryText(file)),
     tier: backupFileTier(file.path),
-    pluginLog: file.path.startsWith(`${SESSION_LOCAL_LOGS}/`),
   }))
   return {
     profileName: activeProfile(),
     fileCount: entries.length,
     totalBytes: Buffer.byteLength(serializeBackup(buildBackupEnvelope(collected.files)), 'utf8'),
-    includePluginLogs: options?.includePluginLogs === true,
-    pluginLogBytes: collected.pluginLogBytes,
     entries,
+    plugins: backupPlugins(collected.files),
   }
 }
 

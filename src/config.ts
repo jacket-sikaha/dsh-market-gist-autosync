@@ -65,22 +65,19 @@ export const MAX_BACKUP_BYTES = 2 * 1024 * 1024
  */
 export const PROFILE_SKIP = new Set(['node_modules', '.dsh-market', '.git', 'pnpm-lock.yaml'])
 /**
- * The host plugin-manager's scratch area inside a profile. It holds exactly two
- * things: `logs/` (one pnpm install log per package operation) and `run.json`
- * (the pid of a running pnpm, recorded so a successor can detect an orphan).
+ * The host plugin-manager's run record inside a profile: `run.json` names the pid
+ * of a running pnpm install, so a successor can detect an orphan.
  *
- * Neither is configuration, so neither travels by default: one real profile had
- * 141 logs / 790 KB out of an 887 KB backup, every byte of it this machine's
- * install output and meaningless elsewhere. The logs travel only when
- * `includePluginLogs` is on; the run record never travels, because it names a
- * pid on the machine that WROTE the backup.
+ * The collector never meets it — every hidden directory is skipped, and
+ * `.plugin-manager` is one. This constant exists for the RESTORE side: backups
+ * written by older versions of this plugin, or by dshmarket, can still carry the
+ * record, and writing it back would tell the host that a pid from ANOTHER machine
+ * owns this profile (the host then refuses every package operation here).
  *
  * Deliberately NOT part of PROFILE_SKIP: that set also decides what a restore
- * REJECTS, and dshmarket's backups do carry these logs. Putting them there
+ * REJECTS, and dshmarket's older backups do carry these files. Putting them there
  * would make us refuse backups we can restore perfectly well.
  */
-export const SESSION_LOCAL_DIR = '.plugin-manager'
-export const SESSION_LOCAL_LOGS = '.plugin-manager/logs'
 export const SESSION_LOCAL_RECORD = '.plugin-manager/run.json'
 export const MAX_UPLOAD_RECORDS = 20
 
@@ -170,17 +167,6 @@ export interface GistBackupConfig {
   /** Schedule interval magnitude + unit (minute-granularity). */
   scheduleIntervalValue: number
   scheduleIntervalUnit: 'minute' | 'hour'
-  /**
-   * Whether the backup carries the host plugin-manager's pnpm install logs
-   * (`SESSION_LOCAL_LOGS`). Default false.
-   *
-   * The switch decides ONLY what a backup contains; restore follows whatever
-   * the backup actually holds, because a backup may come from another machine
-   * with the opposite setting. So a log-carrying backup written by dshmarket
-   * still restores completely here, and a log-free one written here restores
-   * there.
-   */
-  includePluginLogs: boolean
   uploads: UploadRecord[]
 }
 
@@ -191,7 +177,6 @@ export const DEFAULTS: GistBackupConfig = {
   scheduleEnabled: false,
   scheduleIntervalValue: 24,
   scheduleIntervalUnit: 'hour',
-  includePluginLogs: false,
   uploads: [],
 }
 
@@ -226,14 +211,14 @@ export function readBackupConfig(): GistBackupConfig {
     if (parsed && typeof parsed === 'object') {
       const cfg = { ...DEFAULTS, ...parsed } as GistBackupConfig
       if (!Array.isArray(cfg.uploads)) cfg.uploads = []
-      // Keep the switch a boolean whatever an older or hand-edited config.json
-      // says: a string "false" is truthy, and this flag decides how large the
-      // upload gets.
-      if (typeof cfg.includePluginLogs !== 'boolean') cfg.includePluginLogs = DEFAULTS.includePluginLogs
-      // `includeLock` disappeared when pnpm-lock.yaml joined PROFILE_SKIP. Drop
-      // any leftover field from an older config.json so it cannot ride along on
-      // every save and imply a setting that no longer exists.
-      delete (cfg as GistBackupConfig & { includeLock?: unknown }).includeLock
+      // `includeLock` disappeared when pnpm-lock.yaml joined PROFILE_SKIP, and
+      // `includePluginLogs` disappeared when the collector started skipping every
+      // hidden directory (so no setting can put the logs back). Drop both from an
+      // older or hand-edited config.json, otherwise they ride along on every save
+      // and imply switches that no longer exist.
+      const legacy = cfg as GistBackupConfig & { includeLock?: unknown; includePluginLogs?: unknown }
+      delete legacy.includeLock
+      delete legacy.includePluginLogs
       return cfg
     }
   } catch {

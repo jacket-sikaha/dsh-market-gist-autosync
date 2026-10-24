@@ -50,33 +50,38 @@ dsh plugin --profile web add dsh-market-gist-autosync       # 网页版（dsh we
 
 ## 备份内容
 
-当前 profile 目录下所有配置文件，排除：`node_modules`、`.dsh-market`、`.git`、`pnpm-lock.yaml`、`*.bak` 和符号链接。这份排除清单与 dshmarket 的 `SKIP_NAMES` 完全一致，所以两边产出的备份可以互认、互相恢复。
+当前 profile 目录下的配置文件，排除三类：
+
+- **隐藏目录**：所有以 `.` 开头的目录都不进备份 —— `.plugin-manager`（宿主的 pnpm 安装日志与进程记录）、`.dsh-market`（缓存）、`.git` 等等。隐藏**文件**（`.env`、`.npmrc`）照常备份，它们是真正的配置
+- **按名字**：`node_modules`、`pnpm-lock.yaml`
+- **按形态**：`*.bak`、符号链接
+
+排除清单不可配置：dshmarket 1.70.1+ 的遍历规则就是这样（上游为 issue #972 改成跳过隐藏目录），两边对齐后产出的备份才能互相恢复。
 
 `pnpm-lock.yaml` 不备份：lockfile 钉死的是某一台机器解析出来的依赖树，恢复时 `pnpm install` 会按 `package.json` 重新生成它，把它搬到对端只会和安装过程打架。早期版本有一个「同时备份 lockfile」开关，已随此次对齐移除。
 
-### 插件安装日志：默认不备份，可手动打开
+### 为什么不备份 `.plugin-manager`
 
-profile 里的 `.plugin-manager/` 是 DSH 宿主记录包操作的地方：`logs/operation-*/pnpm.log` 存着一次 `pnpm` 的完整 stdout + stderr（界面只显示最后 16 KB），`run.json` 记着正在运行的 pnpm 进程号。宿主自己不清理这些日志。
+`logs/operation-*/pnpm.log` 存着一次 `pnpm` 的完整 stdout + stderr（界面只显示最后 16 KB），宿主自己不清理。一台装了二十来个插件的机器实测：**141 份日志共 792.6 KB，而配置本身只有 46.4 KB** —— 备份体积被撑到 19 倍，887 KB 的备份距 Gist 单文件 1 MB 上限只剩 137 KB，再加一个插件就撞线。
 
-一台装了二十来个插件的机器实测：141 份日志共 792.6 KB，而同一份 profile 的配置本身只有 46.4 KB —— **日志让备份体积翻 19 倍**。Gist 单文件上限是 1 MB，备份 887 KB、余量只剩 137 KB 时，再加一个插件就撞上限了。
+所以隐藏目录整体不进备份（早期版本有过一个「附带安装日志」开关，已随规则对齐移除）。两条硬规则：
 
-所以 `includePluginLogs` 默认关，勾选后才把 `.plugin-manager/logs` 一起上传。这个开关只影响**收集**，不影响恢复：恢复按备份里实际有什么写，因为备份可能来自另一台机器、那边的开关和你这边不是一个值。两条硬规则：
-
-- `run.json` **永不备份、永不写回**：它记的是写备份那台机器上的进程号，写回来会让本机下次装插件报「process N is still running」
-- 开关两侧都不破坏互通：dshmarket 既收集也接受 `logs/`，所以带日志的备份在它那边照样能恢复，它写的带日志备份在这边也能恢复
+- `run.json` **永不写回**：它记的是写备份那台机器上的进程号，写回来会让本机下次装插件报「process N is still running」。现在它连备份都不会进，但恢复旧备份时仍会跳过并报告
+- 读侧比写侧宽松：备份里若带着 `.plugin-manager/...`（旧版本或 dshmarket 写的），这边照原样写回，不会拒收。dshmarket 1.70.1+ 的读侧会**静默丢弃**这类条目 —— 恢复"成功"但日志不落地，也不报错
 
 ### 设置页
 
-「备份设置」一屏管住所有可写项，底部**一个**「保存设置」同时保存 Token、Gist ID、备份内容（日志开关）与定时设置。`saveConfig` 是部分合并，所以这个请求会把需要落盘的字段一次带全 —— 少带一个，那一项就只停留在界面上。
+「备份设置」一屏管住所有可写项，底部**一个**「保存设置」同时保存 Token、Gist ID 与定时设置。`saveConfig` 是部分合并，所以这个请求会把需要落盘的字段一次带全 —— 少带一个，那一项就只停留在界面上。
 
-「查看备份内容」打开弹窗，列出下一次备份会包含哪些文件，按两类分组：
+「查看备份内容」打开「备份内容展示」弹窗，分三部分：
 
 - **主要**：`package.json`、`cordis.patch.yml`、`cordis.yml`、`pnpm-workspace.yaml` —— 决定装哪些插件、怎么加载；缺一项，恢复出来的 profile 就不是原样
-- **次要**：其余配置（打开日志开关后含安装日志，带「日志」标签），写回也不改变行为
+- **备份插件列表**：备份里记着的每个插件，左边插件名、右边 `package.json` 声明的版本约束（如 `^1.70.1`）。插件集合取 `dsh.profile.bundles`，版本取 `dependencies` —— 恢复时 `pnpm install` 解析的就是这个约束，所以显示原文而不转成实际安装版本。宿主自带的 bundle（`@deepseek-ai/dsh-base` 之类）没有依赖行，版本显示 `—`
+- **次要**：其余配置，写回也不改变行为。多数 profile 里没有这类文件，此时这一组不渲染
 
-底部给出合计体积、1 MB 上限与剩余余量。数据来自 `previewProfileBackup()` —— 与真正备份同一条收集路径，所以看到的数字就是上传时的数字。
+底部给出文件数、合计体积、1 MB 上限与剩余余量。数据来自 `previewProfileBackup()` —— 与真正备份同一条收集路径，所以看到的数字就是上传时的数字。
 
-「测试连接」与「查看备份内容」都按**界面上当前的值**工作，不看是否已保存：刚粘贴的 Token 可以直接测，刚打开的日志开关在预览里也立刻生效。
+「测试连接」按**界面上当前的 Token** 工作，不看是否已保存：刚粘贴的 Token 可以直接测。
 
 - `package.json` 以 JSON 对象形式存储，其余文件以行数组形式存储
 - 打包为 `dsh-profile-backup.json`（`format: "dsh-profile-backup"`, `version: 0.2`），上传前做与 dshmarket 对齐的严格结构校验
@@ -120,9 +125,8 @@ dsh 启动加载器按 `dsh.profile.bundles` 的顺序加载插件，**遇到第
 | `scheduleEnabled` | `false` | 是否定时备份（仅 DSH 运行期间执行） |
 | `scheduleIntervalValue` | `24` | 周期间隔数值（≥1） |
 | `scheduleIntervalUnit` | `"hour"` | 周期单位：`"hour"` / `"minute"` |
-| `includePluginLogs` | `false` | 备份里是否附带 `.plugin-manager/logs` 的 pnpm 安装日志（一份 5–25 KB，装插件多的 profile 可达 140+ 份 / 790 KB） |
 
-备份内容的排除清单不可配置（与 dshmarket 的 `SKIP_NAMES` 保持一致）；旧版本 `config.json` 里残留的 `includeLock` 字段会在读取时被丢弃。唯一可配的是 `includePluginLogs`（默认关），而 `run.json` 无论如何都不备份、也不写回。
+备份内容的排除清单不可配置：隐藏目录、`node_modules`、`pnpm-lock.yaml`、`*.bak`、符号链接都不进备份。旧版本 `config.json` 里残留的 `includeLock` / `includePluginLogs` 字段会在读取时被丢弃。
 
 ## 恢复
 
@@ -132,7 +136,7 @@ dsh 启动加载器按 `dsh.profile.bundles` 的顺序加载插件，**遇到第
 2. 原子写回：先写临时文件再替换，任一文件失败则回滚全部。中间目录逐段创建，每段都必须是真实目录 —— 父目录是符号链接/目录联接时拒绝写入，避免文件被引到 profile 之外。备份里若带 `.plugin-manager/logs` 日志会照原样写回，唯独 `run.json` 一律跳过（记的是来源机器的进程号），跳过项会在结果里列出
 3. 合并 `package.json` 依赖（保留已装插件；`bundles` 取并集）
 4. 剔除指向本机不存在路径的 `link:` / `file:` 本地依赖（无法安装，留着会连累引用它的 bundle）
-5. 自动 `pnpm install` 缺失依赖（实时进度）；全部失败则回滚恢复
+5. 自动 `pnpm install` 缺失依赖（实时进度）；全部失败则回滚恢复。安装显式带 `--no-frozen-lockfile`：备份不包含 `pnpm-lock.yaml`，profile 里旧 lockfile 与新 `package.json` 必然对不上，而宿主用 `CI=true` 启动子进程，pnpm 在 CI 下默认冻结 lockfile，不加这个参数会在装任何东西之前就报 `ERR_PNPM_OUTDATED_LOCKFILE`
 6. **启动预检**：仍无法解析、或补丁缺失/损坏的 bundle 从 profile 移除并在界面报告
 7. 重启 DSH 后生效
 
@@ -164,7 +168,7 @@ pnpm build   # Vite 8 (rolldown) 把 host 半打包为单文件 ESM 到 lib/
 | `itest-profile-detect.mjs` | 当前 profile 识别（desktopProfiles / argv / env / 兜底） |
 | `itest-boot-check.mjs` | 启动预检：无法解析、补丁缺失/损坏的 bundle 被捕获并移除；`!!js` 补丁不被误判；「未知」不被当成「缺失」 |
 | `itest-backup-strip.mjs` | 备份端剥离机器本地依赖；本机 profile 不被改写；并集合并保证本机不丢东西 |
-| `itest-plugin-logs.mjs` | 插件安装日志开关：默认不收、打开后收 `logs/` 但不收 `run.json`；严格校验放行带日志的备份（dshmarket 会写）；恢复按备份内容写回并跳过 `run.json` |
+| `itest-hidden-dirs.mjs` | 隐藏目录整体不进备份（`.plugin-manager` / 缓存 / `.git`），隐藏文件（`.env`）保留；`*.bak`、`pnpm-lock.yaml`、`node_modules` 跳过；旧 `config.json` 的 `includePluginLogs` / `includeLock` 被丢弃；恢复仍接受带日志的旧备份、但跳过 `run.json` |
 | `itest-restore-report.mjs` | 恢复报告不自相矛盾（被剔除的依赖不再被要求手动重装） |
 | `diff-gists.mjs` | 开发工具：对比两个 Gist 备份的文件树与内容差异 |
 

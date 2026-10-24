@@ -164,8 +164,13 @@ export async function installRestoredDeps(
   }
 
   // Fast path: one `pnpm install` for everything.
+  // `--no-frozen-lockfile` is required, not cosmetic: `spawnCmd` sets CI=true
+  // (see the env above), and in CI pnpm defaults to --frozen-lockfile. A backup
+  // never carries pnpm-lock.yaml (PROFILE_SKIP drops it), so the profile's
+  // existing lockfile always describes the OLD dependency set and every restore
+  // would abort here with ERR_PNPM_OUTDATED_LOCKFILE before installing anything.
   onProgress?.({ phase: 'install-all' })
-  const install = await spawnCmd('pnpm', ['install', '--config.auto-install-peers=false'], root)
+  const install = await spawnCmd('pnpm', ['install', '--no-frozen-lockfile', '--config.auto-install-peers=false'], root)
   if (install.exitCode === 0) {
     return { ok: true, installed: true, summary: `依赖安装完成（新装 ${missing.length} 个）`, installedNames: missing.map(([n]) => n), prunedNames: [] }
   }

@@ -2,6 +2,32 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.13] - 2026-10-25
+
+### 变更
+
+- **备份跳过整个隐藏目录，不再按文件挑日志**：遍历 profile 时所有以 `.` 开头的目录都跳过 —— `.plugin-manager`（宿主的 pnpm 安装日志与进程记录）、`.dsh-market` 缓存、`.git` 等。隐藏**文件**（`.env`、`.npmrc`）照旧备份，它们是真正的配置。规则与 dshmarket 1.70.1+ 的 `profileFiles` 完全一致（上游为 issue #972 改成跳过隐藏目录），所以两边产出的备份仍然互认。
+- **移除 `includePluginLogs` 开关**：既然隐藏目录整体不收，就没有"要不要带日志"这个选项了，配置项、RPC 入参、UI 开关一并删除。旧 `config.json` 里残留的 `includePluginLogs` 与 `includeLock` 会在读取时丢弃，不随每次保存继续流传。
+- 收集侧不再需要 `.plugin-manager` 的专项分支：`SESSION_LOCAL_DIR` / `SESSION_LOCAL_LOGS` 删除，只保留 `SESSION_LOCAL_RECORD`（`run.json`，恢复旧备份时仍要跳过它）。
+- `collectProfileBackup()` / `previewProfileBackup()` 不再接受参数，返回值去掉 `pluginLogBytes`、预览条目去掉 `pluginLog` 标记：备份内容现在没有任何可配置项。
+- 超限报错改为始终点名占用最大的几个文件（之前优先说"其中多少是日志"）。
+
+### 界面
+
+- 「查看备份内容」弹窗改名为**「备份内容展示」**：标题、正文说明一并更新，去掉日志标签与"开关"相关文案；底部改为「共 N 个文件 · 合计 X / 上限 Y · 余量 Z」。
+- 弹窗把「次要」分组换成**「备份插件列表」**：左边插件名、右边 `package.json` 声明的版本约束（`^1.70.1` 原样显示，恢复时 `pnpm install` 解析的就是它）。插件集合取 `dsh.profile.bundles`，宿主自带的 bundle 没有依赖行，版本显示 `—`；非 bundle 的依赖不列出。真正的非主要配置存在时，「次要」分组仍会出现。
+- 设置页删掉「备份里附带插件安装日志」开关及其两段说明，说明文字只留一行：`不含 node_modules、pnpm-lock.yaml、*.bak、符号链接与隐藏目录`，右侧是「查看备份内容」按钮。
+- 「保存设置」不再涉及备份内容（已无可配项），仍一次带全 Token、Gist ID、设备名与定时设置。
+
+### 新增
+
+- `scripts/itest-hidden-dirs.mjs`（26 项）：隐藏目录（`.plugin-manager` / 缓存 / `.dsh-market`）整体不收、隐藏文件 `.env` 保留、`*.bak` 与 `pnpm-lock.yaml`、`node_modules` 跳过；预览与收集完全一致；旧 `config.json` 的 `includePluginLogs` / `includeLock` 被丢弃；恢复仍接受带日志的旧备份、写入日志但跳过 `run.json`。
+
+### 修复
+
+- **恢复时的依赖安装不再被 pnpm 的 frozen-lockfile 挡住**：备份从不包含 `pnpm-lock.yaml`（按设计跳过），恢复写下的 `package.json` 描述的是一套新的依赖，profile 里旧 lockfile 必然对不上；宿主又用 `CI=true` 启动子进程，pnpm 在 CI 下默认 `--frozen-lockfile`，于是 `pnpm install` 在装任何东西之前就报 `ERR_PNPM_OUTDATED_LOCKFILE` 失败。现在快路径显式带 `--no-frozen-lockfile`（同一 profile 实测：不加 flag 立刻失败，加了 2.4 s 完成），不再退化到逐个 `pnpm add`。
+- 备份侧不再可能生成"对端会静默丢弃一半内容"的备份：dshmarket 1.70.1+ 的 `validatedBackup` 会 `continue` 掉任何含隐藏目录段的条目，旧的"打开日志开关"备份在它那边恢复会显示成功却丢掉日志。
+
 ## [0.1.12] - 2026-10-22
 
 ### 变更
