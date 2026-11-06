@@ -31,6 +31,8 @@ dsh plugin --profile web add dsh-market-gist-autosync       # 网页版（dsh we
 
 安装后在 **设置 → Gist 备份** 中配置。
 
+「设置 → 插件」里的图标来自 `package.json` 顶层的 `icon` 字段（`assets/logo.svg`，64×64 的方形徽标）。DSH ≥ 0.1.7 才会读它；更早的版本忽略这个字段，不影响插件本身。
+
 ## 兼容的 DSH 版本
 
 宿主包的 peer 范围覆盖 `0.1.5-rc.1` 起的全部版本，含 `0.2.0-rc` 与 `0.2.1-rc` 两条线；开发与联调跑在 **0.2.1-rc.2**（`cordis` 4.0.5、`dsh-host-webserver` / `dsh-settings` / `dsh-storage-domain` 均 0.2.1-rc.2、`schemastery` 3.18.5、`zod` 4.6.7）。

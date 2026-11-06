@@ -2,6 +2,14 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.1] - 2026-11-06
+
+这一版只加图标，不动任何备份/恢复行为：`restore`、`restoreProgress` 的契约与备份格式都没变，0.2.0 的备份与它完全互认。
+
+### 新增
+
+- **插件图标**：`package.json` 顶层新增 `"icon": "assets/logo.svg"`，并把 `assets/logo.svg` 加进 `files`。DSH ≥ 0.1.7 在「设置 → 插件」里读这个字段作为已安装行的图标；字段缺失、文件没打进 npm 包、超过 256 KB 或扩展名不在白名单里时，那一行显示的是 `meta.error` 而不是退回占位图。图标本身是 64×64 的方形徽标：白描边同步环 + 文档，蓝渐变底，24 px 下仍可辨认。
+
 ## [0.2.0] - 2026-10-26
 
 这一版是小版本号而不是补丁号：`restoreProgress` 的返回结构从「文本行数组」换成了阶段状态机，属于对 RPC 契约的不兼容变更（`restore` 回包保留 `progressLines` 以兼容旧调用方）。备份格式没有变，与 dshmarket 仍然互认。
@@ -226,6 +234,7 @@
 - 严格备份结构校验（格式、路径安全、无重复路径），上限 256 文件 / 1MB。
 - 设置页 UI：Token 独立保存、测试连接、立即备份、恢复进度、上传记录（最近 20 条）、浮动 toast 提示。
 
+[0.2.1]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.13...v0.2.0
 [0.1.13]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/jacket-sikaha/dsh-market-gist-autosync/compare/v0.1.11...v0.1.12

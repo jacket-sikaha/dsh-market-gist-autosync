@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="Gist 备份">
+  <title>Gist 备份</title>
+  <defs>
+    <linearGradient id="gist-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#0ea5e9"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="url(#gist-bg)"/>
+  <rect x="25.2" y="22.6" width="13.6" height="18.8" rx="3" fill="#ffffff"/>
+  <g fill="#2563eb">
+    <rect x="28.5" y="26.9" width="7" height="2" rx="1"/>
+    <rect x="28.5" y="31.2" width="7" height="2" rx="1"/>
+    <rect x="28.5" y="35.5" width="4.6" height="2" rx="1"/>
+  </g>
+  <path d="M49.85 25.50 A19 19 0 1 1 38.50 14.15" fill="none" stroke="#ffffff" stroke-width="4.6" stroke-linecap="round"/>
+  <path d="M44.14 16.20 L38.04 10.15 L35.58 16.91 Z" fill="#ffffff"/>
+</svg>
