@@ -16,6 +16,8 @@
 - **devDependencies 对齐 0.2.2-rc.1**：三个宿主包与 `cordis`（4.1.0）都换成精确版本，回归跑在新宿主上：`tsc --noEmit` 零错误，16 个测试脚本全绿（含用真宿主 + 真 HTTP 的 `itest-host-compat`）。
 - **删除 `dsh.engines.dsh`**：宿主闸门只读**顶层** `engines.dsh`，写在 `dsh` 子块里的这一条从未被读取，属于假约束，去掉以免误导。
 
+- **packageManager 升到 pnpm 12.18.0**：开发与 CI 统一用 pnpm 12。12 会在 `pnpm-lock.yaml` 顶部多写一个 YAML 文档，记录 pnpm 自己的平台包（`packageManagerDependencies` + `@pnpm/exe.*`），项目依赖那段原样不动；全新项目里也是同样的形态，不是文件损坏。`pnpm install --frozen-lockfile`、`tsc --noEmit`、构建与 16 个测试脚本在 12.18.0 下全部通过。
+
 ## [0.2.0] - 2026-10-26
 
 这一版是小版本号而不是补丁号：`restoreProgress` 的返回结构从「文本行数组」换成了阶段状态机，属于对 RPC 契约的不兼容变更（`restore` 回包保留 `progressLines` 以兼容旧调用方）。备份格式没有变，与 dshmarket 仍然互认。
