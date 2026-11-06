@@ -4,11 +4,17 @@
 
 ## [0.2.1] - 2026-11-06
 
-这一版只加图标，不动任何备份/恢复行为：`restore`、`restoreProgress` 的契约与备份格式都没变，0.2.0 的备份与它完全互认。
+这一版只加图标与兼容范围调整，不动任何备份/恢复行为：`restore`、`restoreProgress` 的契约与备份格式都没变，0.2.0 的备份与它完全互认。
 
 ### 新增
 
 - **插件图标**：`package.json` 顶层新增 `"icon": "assets/logo.svg"`，并把 `assets/logo.svg` 加进 `files`。DSH ≥ 0.1.7 在「设置 → 插件」里读这个字段作为已安装行的图标；字段缺失、文件没打进 npm 包、超过 256 KB 或扩展名不在白名单里时，那一行显示的是 `meta.error` 而不是退回占位图。图标本身是 64×64 的方形徽标：白描边同步环 + 文档，蓝渐变底，24 px 下仍可辨认。
+
+### 变更
+
+- **peer 范围收敛为 `^0.2.1-rc.1`**：三个宿主包（`dsh-host-webserver` / `dsh-settings` / `dsh-storage-domain`）不再声明 `0.1.5-rc.1`–`0.1.7-rc.2` 那几条老线，只支持 `0.2.1-rc.1` 及之后的 `0.2.x`。宿主的兼容性闸门用 `includePrerelease: true` 判定，所以这一条同样覆盖 `0.2.2-rc.1`。
+- **devDependencies 对齐 0.2.2-rc.1**：三个宿主包与 `cordis`（4.1.0）都换成精确版本，回归跑在新宿主上：`tsc --noEmit` 零错误，16 个测试脚本全绿（含用真宿主 + 真 HTTP 的 `itest-host-compat`）。
+- **删除 `dsh.engines.dsh`**：宿主闸门只读**顶层** `engines.dsh`，写在 `dsh` 子块里的这一条从未被读取，属于假约束，去掉以免误导。
 
 ## [0.2.0] - 2026-10-26
 

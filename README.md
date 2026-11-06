@@ -35,7 +35,9 @@ dsh plugin --profile web add dsh-market-gist-autosync       # 网页版（dsh we
 
 ## 兼容的 DSH 版本
 
-宿主包的 peer 范围覆盖 `0.1.5-rc.1` 起的全部版本，含 `0.2.0-rc` 与 `0.2.1-rc` 两条线；开发与联调跑在 **0.2.1-rc.2**（`cordis` 4.0.5、`dsh-host-webserver` / `dsh-settings` / `dsh-storage-domain` 均 0.2.1-rc.2、`schemastery` 3.18.5、`zod` 4.6.7）。
+宿主包的 peer 范围是 `^0.2.1-rc.1`（`dsh-host-webserver` / `dsh-settings` / `dsh-storage-domain` 三处），即只支持 `0.2.1-rc.1` 及之后的 `0.2.x`，不再声明 `0.1.5` / `0.1.7` 两条老线。开发与联调跑在 **0.2.2-rc.1**（`cordis` 4.1.0、三个宿主包均 0.2.2-rc.1、`schemastery` 3.18.5、`zod` 4.6.7）——devDeps 用精确版本钉住，方便把"这一版是在哪个宿主上验过的"固定下来。
+
+宿主的兼容性闸门用 `semver.satisfies(运行时版本, 范围, { includePrerelease: true })` 判定，且只检查 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*` 开头的 peer：`cordis`、`schemastery`、`zod` 不参与判定。另外它只读**顶层** `engines.dsh`（有就独占判定），所以本包不声明那个字段，避免出现"看着在生效、其实没读"的假约束。
 
 `scripts/itest-host-compat.mjs` 会用真宿主跑一遍：起真 `cordis` Context、真 `dsh-host-webserver`（`port: 0`，端口由系统分配），把插件按 DSH 的方式挂上去，再用真实 HTTP 打自己的 RPC —— 宿主契约一变，这里先红，而不是等用户装上去才发现。
 
